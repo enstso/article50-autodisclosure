@@ -169,7 +169,7 @@ class ScanService:
             validated_article50 = Article50AnalysisResult.model_validate(article50_result)
             scan.article50_assessments = validated_article50.assessments
             scan.findings = build_article50_findings(
-                scan.article50_assessments, scan.ai_interactions
+                scan.id, scan.article50_assessments, scan.ai_interactions
             )
             self._capture_remediation_contexts(scan)
             for assessment in scan.article50_assessments:
@@ -376,7 +376,10 @@ class ScanService:
         for index, finding in enumerate(scan.findings):
             if finding.status != ReadinessStatus.ACTION_REQUIRED:
                 continue
-            interaction_id = finding.id.removeprefix("article50-")
+            finding_prefix = f"{scan.id}-article50-"
+            if not finding.id.startswith(finding_prefix):
+                continue
+            interaction_id = finding.id.removeprefix(finding_prefix)
             assessment = assessments.get(interaction_id)
             interaction = interactions.get(interaction_id)
             if assessment is None or interaction is None or not interaction.frontend_entrypoint:

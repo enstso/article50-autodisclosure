@@ -321,36 +321,43 @@ def test_controlled_demo_completes_the_full_verified_flow(tmp_path: Path) -> Non
     app.dependency_overrides[get_patch_service] = lambda: patch_service
     try:
         with TestClient(app) as test_client:
-            scan_response = test_client.post(
-                "/api/scans", json={"repository_url": DEMO_REPOSITORY_URL}
-            )
-            assert scan_response.status_code == 201
-            scan = scan_response.json()
-            assert scan["model_mode"] == "DEMO"
-            assert scan["status"] == "ACTION_REQUIRED"
-            assert len(scan["ai_interactions"]) == 1
-            assert len(scan["findings"]) == 1
-            assert scan["findings"][0]["remediation_available"] is True
+            finding_ids: set[str] = set()
+            for _ in range(2):
+                scan_response = test_client.post(
+                    "/api/scans", json={"repository_url": DEMO_REPOSITORY_URL}
+                )
+                assert scan_response.status_code == 201
+                scan = scan_response.json()
+                assert scan["model_mode"] == "DEMO"
+                assert scan["status"] == "ACTION_REQUIRED"
+                assert len(scan["ai_interactions"]) == 1
+                assert len(scan["findings"]) == 1
+                assert scan["findings"][0]["remediation_available"] is True
 
-            proposal = test_client.post(
-                f"/api/findings/{scan['findings'][0]['id']}/patch"
-            ).json()
-            assert proposal["status"] == "READY_FOR_REVIEW"
-            test_client.post(f"/api/patches/{proposal['id']}/approve")
-            applied = test_client.post(f"/api/patches/{proposal['id']}/apply")
+                finding_id = scan["findings"][0]["id"]
+                assert finding_id not in finding_ids
+                finding_ids.add(finding_id)
+                proposal_response = test_client.post(
+                    f"/api/findings/{finding_id}/patch"
+                )
+                assert proposal_response.status_code == 201
+                proposal = proposal_response.json()
+                assert proposal["status"] == "READY_FOR_REVIEW"
+                test_client.post(f"/api/patches/{proposal['id']}/approve")
+                applied = test_client.post(f"/api/patches/{proposal['id']}/apply")
 
-            assert applied.status_code == 200
-            assert applied.json()["patch_status"] == "VERIFIED"
-            assert applied.json()["verification"]["status"] == "PASSED"
-            verification = test_client.get(
-                f"/api/patches/{proposal['id']}/verification"
-            )
-            assert verification.status_code == 200
-            assert verification.json()["new_readiness_status"] == "PASS"
+                assert applied.status_code == 200
+                assert applied.json()["patch_status"] == "VERIFIED"
+                assert applied.json()["verification"]["status"] == "PASSED"
+                verification = test_client.get(
+                    f"/api/patches/{proposal['id']}/verification"
+                )
+                assert verification.status_code == 200
+                assert verification.json()["new_readiness_status"] == "PASS"
 
-            refreshed = test_client.get(f"/api/scans/{scan['id']}").json()
-            assert refreshed["status"] == "PASS"
-            assert refreshed["findings"][0]["resolution"] == "RESOLVED"
+                refreshed = test_client.get(f"/api/scans/{scan['id']}").json()
+                assert refreshed["status"] == "PASS"
+                assert refreshed["findings"][0]["resolution"] == "RESOLVED"
     finally:
         app.dependency_overrides.clear()
 

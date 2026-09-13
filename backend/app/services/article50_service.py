@@ -153,6 +153,7 @@ class TransparencyAssessmentValidator:
 
 
 def build_article50_findings(
+    scan_id: str,
     assessments: list[TransparencyAssessment],
     interactions: list[AIInteractionFlow],
 ) -> list[Finding]:
@@ -171,7 +172,7 @@ def build_article50_findings(
             affected_files = [interaction.frontend_entrypoint]
         findings.append(
             Finding(
-                id=f"article50-{assessment.interaction_id}",
+                id=f"{scan_id}-article50-{assessment.interaction_id}",
                 rule=assessment.rule_id,
                 severity="MEDIUM",
                 title=title,

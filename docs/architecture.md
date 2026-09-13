@@ -1,109 +1,227 @@
-# Initial architecture
+# Architecture
 
-Article 50 AutoDisclosure is split into independently runnable frontend and backend applications.
+Article 50 AutoDisclosure combines bounded agent reasoning with deterministic safety controls. The
+FastAPI service owns the workflow and trust boundaries; Strands stages investigate repository context
+and return typed proposals, while application services validate every source fact and mutation.
 
-```text
-Browser (React)
-    │ scan, patch generation, review, approval, application, and verification endpoints
-    ▼
-FastAPI application
-    ├── api       HTTP routes and schemas
-    ├── core      configuration and cross-cutting concerns
-    ├── models    workflow domain models
-    ├── services  scan, workspace, clone, readiness, and patch orchestration
-    ├── agents    Strands repository, interaction, readiness, and remediation agents
-    └── tools     bounded repository, AI-flow, disclosure, and remediation context inspection
+## System view
+
+```mermaid
+flowchart LR
+    DEV[Developer] --> UI[React + TypeScript UI]
+    UI -->|REST| API[FastAPI API]
+    API --> SCAN[ScanService]
+    API --> PATCH[PatchService]
+
+    SCAN --> REPO_AGENT[Repository investigation stage]
+    SCAN --> FLOW_AGENT[AI interaction reconstruction stage]
+    SCAN --> A50_AGENT[Article 50 analysis stage]
+    PATCH --> REM_AGENT[Remediation planning stage]
+
+    REPO_AGENT --> STRANDS[Strands Agents SDK]
+    FLOW_AGENT --> STRANDS
+    A50_AGENT --> STRANDS
+    REM_AGENT --> STRANDS
+    STRANDS --> BEDROCK[Amazon Bedrock]
+
+    REPO_AGENT --> READ_TOOLS[Bounded repository tools]
+    FLOW_AGENT --> FLOW_TOOLS[AI detection tools]
+    A50_AGENT --> DISC_TOOLS[Disclosure inspection tools]
+    REM_AGENT --> REM_TOOLS[Read-only remediation context]
+
+    READ_TOOLS --> WORKSPACE[Isolated repository workspace]
+    FLOW_TOOLS --> WORKSPACE
+    DISC_TOOLS --> WORKSPACE
+    REM_TOOLS --> WORKSPACE
+
+    SCAN --> FINDING[Evidence-backed finding]
+    FINDING --> PROPOSAL[Validated patch proposal]
+    PROPOSAL --> HUMAN{Human approval}
+    HUMAN -->|Reject| STOP[No source mutation]
+    HUMAN -->|Approve| APPLY[Separate apply request]
+    APPLY --> GUARDS[Revalidation + snapshot + manifest]
+    GUARDS --> WORKSPACE
+    WORKSPACE --> VERIFY[Targeted re-scan]
+    VERIFY --> PASS[PASS or explicit non-pass result]
 ```
 
-## Repository investigation flow
+The four reasoning stages are sequential responsibilities inside one controlled workflow. They do not
+form an independent collaborating multi-agent system. Each stage uses the same centrally configured
+Bedrock model and receives only the tools needed for its task.
 
-```text
-Validate GitHub HTTPS URL
-→ create workspace/{scan_id}/repository
-→ shallow clone without submodules, tags, prompts, or LFS smudge
-→ enforce repository size limit
-→ invoke Strands with the centralized Bedrock model
-→ validate RepositorySummary with Pydantic
-→ detect deterministic AI signals and routes
-→ let the AI interaction agent investigate targeted source paths
-→ verify every proposed evidence item against actual files and lines
-→ calibrate confidence from UI/API/backend/model evidence completeness
-→ identify UI files associated with each confirmed interaction
-→ search those files deterministically for rendered AI disclosure text
-→ invoke the Article 50 Strands agent with bounded candidates and read-only tools
-→ validate readiness outcomes and disclosure evidence
-→ generate findings and map the aggregate readiness status
-→ retain the isolated workspace and a bounded source context for each remediable finding
-→ retain the scan result in memory
-→ remove non-remediable or failed temporary workspaces
+## End-to-end workflow
+
+```mermaid
+sequenceDiagram
+    actor D as Developer
+    participant UI as React UI
+    participant API as FastAPI
+    participant S as ScanService
+    participant A as Strands + Bedrock
+    participant W as Isolated workspace
+    participant P as PatchService
+
+    D->>UI: Submit public GitHub URL or demo fixture
+    UI->>API: POST /api/scans
+    API->>S: Create scan
+    S->>W: Clone or materialize fresh fixture
+    S->>A: Investigate repository with bounded tools
+    A-->>S: Typed summary, flow, and assessment proposals
+    S->>W: Revalidate evidence against source
+    S-->>UI: ACTION REQUIRED + finding
+    D->>UI: Generate fix
+    UI->>P: POST /api/findings/{id}/patch
+    P->>A: Plan minimal remediation
+    A-->>P: Structured plan + unified diff
+    P->>W: Dry-apply and validate diff
+    P-->>UI: READY FOR REVIEW
+    D->>UI: Approve exact diff
+    UI->>P: POST /api/patches/{id}/approve
+    P-->>UI: APPROVED, no mutation yet
+    D->>UI: Apply approved patch
+    UI->>P: POST /api/patches/{id}/apply
+    P->>W: Revalidate, snapshot, apply, compare manifest
+    P->>S: Re-scan affected interaction
+    S->>W: Verify disclosure evidence
+    S-->>UI: VERIFIED + PASS
 ```
 
-The agent receives no shell or file-write tool. The only available operations are structure discovery,
-directory listing, bounded UTF-8 source reading, and bounded literal text search. All paths are resolved
-and checked against the backend-generated repository root, and shared rules exclude dependency, build,
-cache, IDE, and Git metadata directories.
+## Agent reasoning
 
-AWS model creation lives in `app/core/bedrock.py`. It receives only the configured model identifier and
-region; boto3 resolves credentials through its standard provider chain. Tests inject fake clone and agent
-implementations and never contact GitHub or AWS.
+The Strands Agents SDK is used where the system must interpret relationships across an unfamiliar code
+base:
+
+- summarize repository architecture and important source paths;
+- investigate likely AI integrations beyond manifest presence;
+- reconstruct the user-facing path from UI caller to route, handler, provider, and model;
+- reason over a bounded shortlist of likely rendered disclosure text;
+- plan a minimal remediation for one verified frontend entrypoint.
+
+Every stage returns Pydantic structured output. The Bedrock integration is centralized in
+`backend/app/core/bedrock.py`; it configures `BedrockModel` with the selected model ID, region, and a low
+temperature. boto3 resolves credentials through its standard provider chain.
+
+Default model configuration:
+
+```env
+AWS_REGION=us-east-1
+BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-6
+```
+
+## Deterministic safety tools
+
+Agent reasoning never authorizes a source mutation on its own. Deterministic code owns:
+
+- strict public GitHub HTTPS URL validation;
+- isolated workspace creation and path containment;
+- clone limits and bounded UTF-8 source access;
+- canonical file, line, snippet, and evidence-type validation;
+- the minimum evidence required for a confirmed user-facing interaction;
+- disclosure candidate extraction from likely rendered UI text;
+- readiness result guardrails;
+- allowed target files, unified-diff parsing, dry application, and line limits;
+- patch lifecycle transitions and mandatory human approval;
+- stale-source, binary-file, traversal, symlink, and `.git` protection;
+- snapshots, repository-wide before/after manifests, rollback, and replay protection;
+- targeted post-application verification.
+
+This design lets the model interpret code while keeping filesystem authority narrow and auditable.
+
+## Repository investigation boundary
+
+Live scans accept only public `https://github.com/{owner}/{repository}` URLs. The clone is shallow and
+uses no tags or submodules; interactive prompts, credential helpers, and LFS smudging are disabled.
+Repository size is checked after cloning.
+
+The model has no shell. Its repository tools can discover structure, list a bounded directory, read a
+bounded text file, and perform bounded literal search. Shared rules exclude Git metadata, dependencies,
+build output, caches, and editor directories. Every path is resolved beneath the backend-created
+repository root.
+
+The controlled demo bypasses network cloning only. It materializes a fresh local fixture in the same
+workspace shape and then uses the real scan, patch, and verification services with deterministic model
+responses.
 
 ## Evidence boundary
 
-The language model proposes architecture conclusions, but it is not trusted as a source of code facts.
-`EvidenceService` re-opens each proposed repository-relative file, validates its line number and exact
-snippet, and emits the canonical source line. Deterministic AI candidates, route locations, and endpoint
-callers provide additional allowlists for evidence types. Unsupported or fabricated evidence is dropped.
+Model-proposed code evidence is not trusted as a fact. `EvidenceService` reopens the repository-relative
+file, verifies the proposed line and exact snippet, and emits canonical source content. Unsupported or
+fabricated evidence is discarded.
 
-An installed dependency alone can appear as a detector signal but cannot become a confirmed interaction.
-A confirmed user-facing interaction requires evidence spanning a client endpoint call, an API route, a
-backend handler/service link, and an actual model invocation. Incomplete or background-only usage remains
-an `AIUsage` without an invented frontend connection.
+An installed AI dependency is only a signal. A confirmed direct interaction requires evidence for:
+
+1. a user-facing client caller;
+2. the corresponding API route;
+3. a backend handler or service link;
+4. an actual model invocation.
+
+Incomplete or background-only usage remains an AI usage signal and does not become an invented
+user-facing flow.
 
 ## Article 50 readiness boundary
 
-The MVP evaluates only `ARTICLE_50_1_AI_INTERACTION_DISCLOSURE`. Its metadata and official source
-reference are centralized in `app/core/article50_rules.py`. It does not attempt a general EU AI Act
-assessment and does not automate the legal exception for cases where the AI nature may be obvious from
-context.
+The MVP implements one rule, `ARTICLE_50_1_AI_INTERACTION_DISCLOSURE`, referencing Regulation (EU)
+2024/1689, Article 50(1). It does not perform a general EU AI Act audit or automate legal exceptions.
 
-`DisclosureInspector` starts from the Ticket 03 `frontend_entrypoint`, follows bounded relative UI
-imports, identifies direct parent components, and extracts likely rendered text from JSX nodes,
-user-visible attributes, rendered constants, and imported translation files. It never executes cloned
-code. A README, source comment, backend log, dependency, or unrendered variable cannot become disclosure
-evidence.
+Disclosure inspection starts from the reconstructed frontend entrypoint. It follows bounded relative UI
+imports, direct parent components, and easily discoverable translations. Likely rendered JSX text,
+rendered constants, and user-visible attributes may become candidates. README text, comments, backend
+logs, dependency names, and unrendered variables cannot establish a pass.
 
-The Article 50 agent reasons over this deterministic shortlist. `TransparencyAssessmentValidator`
-then establishes the final result: explicit and relevant UI evidence produces `PASS`; a complete
-user-facing trace with no candidate produces `ACTION_REQUIRED`; incomplete, ambiguous, or dynamically
-uncertain context produces `NEEDS_REVIEW`. Absence is explained from the inspected scope and complete
-flow—it is never represented by fabricated source evidence.
+After Strands reasons over the candidates, the validator determines the public result:
 
-## Remediation, application, and verification boundary
+- `PASS`: explicit, relevant, validated UI disclosure evidence exists;
+- `ACTION_REQUIRED`: a complete direct interaction exists and the bounded UI scope has no candidate;
+- `NEEDS_REVIEW`: the interaction, text, or visibility remains ambiguous.
 
-Remediation operates only on an `ACTION_REQUIRED` finding for the primary Article 50 disclosure rule.
-`ScanService` records the affected interaction, assessment, finding, verified frontend source, and a
-SHA-256 digest in a process-local context. The remediation agent later receives
-only bounded excerpts of that snapshot through `get_remediation_context`; it has no shell, write, patch,
-Git, or workspace tool.
+Confidence describes evidence completeness, not the probability of legal compliance.
 
-The agent returns a structured `RemediationPlan`. `UnifiedDiffValidator` permits one existing file from
-the captured context, rejects absolute paths, traversal, `.git`, binary patches, unknown files, empty or
-oversized diffs, and dry-applies every hunk against the exact snapshot. It also reconstructs the proposed
-source and uses the UI-text extractor to confirm that the added disclosure is explicit and likely
-rendered—not merely a comment or unrendered variable.
+## Human approval and mutation boundary
 
-`PatchService` stores validated proposals as `READY_FOR_REVIEW`. The API permits only
-`READY_FOR_REVIEW → APPROVED` or `READY_FOR_REVIEW → REJECTED`; timestamps and an optional rejection
-reason preserve the decision. Only a later explicit apply request can mutate an approved patch.
+Remediation is available only for an `ACTION_REQUIRED` finding tied to the implemented rule and a
+verified frontend entrypoint. The remediation stage sees bounded excerpts from the captured source
+snapshot through one read-only context tool.
 
-Application repeats path, size, binary, diff, allowlist, snapshot-integrity, and current-source checks.
-It stores only affected files under `workspace/{scan_id}/snapshots/{patch_id}`, then uses the same
-deterministic Python hunk applicator used for preflight. Repository manifests before and after the write
-must differ by exactly `PatchProposal.affected_files`, including no `.git` change. A failed mutation is
-restored from the snapshot and becomes `FAILED`; `APPLIED` and `VERIFIED` proposals reject replay.
+Before a proposal reaches the UI, `UnifiedDiffValidator` requires one existing captured frontend file,
+safe repository-relative paths, matching hunks, a bounded line count, and an added explicit disclosure
+that appears to be rendered UI text. It dry-applies the diff in memory.
 
-After a successful write, `ScanService` reuses its Article 50 analyzer for the original interaction and
-updates the existing assessment. Only `ACTION_REQUIRED → PASS` records verification `PASSED`, advances
-the patch to `VERIFIED`, moves the aggregate scan to `PASS`, and resolves the finding. A remaining gap
-records `FAILED` without claiming success; ambiguous or unavailable analysis records `NEEDS_REVIEW`.
-No repository code or shell is exposed or executed anywhere in this loop.
+The lifecycle is deliberately split:
+
+```text
+READY_FOR_REVIEW → APPROVED → APPLYING → APPLIED → VERIFIED
+                 ↘ REJECTED                 ↘ explicit verification failure/review
+```
+
+Approval records a human decision but performs no write. A separate apply request repeats every path,
+allowlist, diff, size, binary, snapshot-integrity, and current-source check. It copies affected files to
+`workspace/{scan_id}/snapshots/{patch_id}` before mutation. A repository-wide hash manifest must show
+that exactly the approved files changed; otherwise the snapshot is restored. Applied and verified
+proposals cannot be replayed.
+
+Verification reuses the Article 50 analysis boundary for the original interaction. Only
+`ACTION_REQUIRED → PASS` resolves the finding and marks the patch `VERIFIED`. Any remaining or ambiguous
+gap is reported explicitly rather than being presented as success.
+
+## Runtime state and API
+
+FastAPI exposes:
+
+- `GET /api/health`
+- `POST /api/scans` and `GET /api/scans/{scan_id}`
+- `POST /api/findings/{finding_id}/patch`
+- `GET /api/patches/{patch_id}`
+- `POST /api/patches/{patch_id}/approve`
+- `POST /api/patches/{patch_id}/reject`
+- `POST /api/patches/{patch_id}/apply`
+- `GET /api/patches/{patch_id}/verification`
+
+Interactive OpenAPI documentation is available at `/docs` while the backend runs. Scan and patch state
+is currently stored in process memory; it is not an authentication or multi-tenant production service.
+
+## Deliberate non-goals
+
+The hackathon release does not add authentication, private repository access, arbitrary repository code
+execution, Git commits or pushes, pull-request creation, persistent workflow storage, GDPR auditing, or a
+full EU AI Act assessment. AgentCore remains a future deployment option rather than a last-minute runtime
+dependency.
