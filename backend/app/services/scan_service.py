@@ -5,10 +5,24 @@ from uuid import uuid4
 
 from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
 
-from app.agents import AIInteractionInvestigationAgent, RepositoryInvestigationAgent
+from app.agents import (
+    AIInteractionInvestigationAgent,
+    Article50AnalysisAgent,
+    RepositoryInvestigationAgent,
+)
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AutoDisclosureError
-from app.models import AIInvestigationResult, RepositorySummary, Scan, ScanStatus
+from app.models import (
+    AIInteractionFlow,
+    AIInvestigationResult,
+    Article50AnalysisResult,
+    ReadinessStatus,
+    RepositorySummary,
+    Scan,
+    ScanStatus,
+    TransparencyAssessment,
+)
+from app.services.article50_service import build_article50_findings
 from app.services.repository_service import RepositoryService, validate_repository_url
 from app.services.workspace_service import WorkspaceService
 
@@ -21,6 +35,12 @@ class AIInteractionAnalyzer(Protocol):
     def analyze(self, scan_id: str) -> AIInvestigationResult: ...
 
 
+class Article50Analyzer(Protocol):
+    def analyze(
+        self, scan_id: str, interactions: list[AIInteractionFlow]
+    ) -> Article50AnalysisResult: ...
+
+
 class ScanService:
     def __init__(
         self,
@@ -29,12 +49,14 @@ class ScanService:
         repository_service: RepositoryService | None = None,
         analyzer_factory: Callable[[], RepositoryAnalyzer] = RepositoryInvestigationAgent,
         ai_analyzer_factory: Callable[[], AIInteractionAnalyzer] = AIInteractionInvestigationAgent,
+        article50_analyzer_factory: Callable[[], Article50Analyzer] = Article50AnalysisAgent,
     ) -> None:
         self.settings = settings or get_settings()
         self.workspace_service = workspace_service or WorkspaceService(self.settings)
         self.repository_service = repository_service or RepositoryService(self.settings)
         self.analyzer_factory = analyzer_factory
         self.ai_analyzer_factory = ai_analyzer_factory
+        self.article50_analyzer_factory = article50_analyzer_factory
         self._scans: dict[str, Scan] = {}
         self._lock = Lock()
 
@@ -86,7 +108,29 @@ class ScanService:
                     if interaction.user_facing
                     else "AI interaction remains incomplete or non-user-facing"
                 )
-            scan.status = ScanStatus.COMPLETED
+
+            scan.events.append("Evaluating Article 50 transparency readiness")
+            scan.events.append("Inspecting user-facing AI interface")
+            scan.events.append("Searching for AI disclosure")
+            self._save(scan)
+            article50_result = self.article50_analyzer_factory().analyze(
+                scan.id, scan.ai_interactions
+            )
+            validated_article50 = Article50AnalysisResult.model_validate(article50_result)
+            scan.article50_assessments = validated_article50.assessments
+            scan.findings = build_article50_findings(
+                scan.article50_assessments, scan.ai_interactions
+            )
+            for assessment in scan.article50_assessments:
+                if assessment.status == ReadinessStatus.PASS:
+                    scan.events.append("AI disclosure detected")
+                    scan.events.append("Article 50 readiness check passed")
+                elif assessment.status == ReadinessStatus.ACTION_REQUIRED:
+                    scan.events.append("No relevant disclosure found")
+                    scan.events.append("Potential transparency gap detected")
+                else:
+                    scan.events.append("Manual transparency review recommended")
+            scan.status = _readiness_scan_status(scan.article50_assessments)
             scan.events.append("Repository analysis completed")
         except Exception as error:  # Errors are converted to a deliberately small safe vocabulary.
             scan.status = ScanStatus.FAILED
@@ -143,6 +187,17 @@ def _safe_error_message(error: Exception) -> str:
     if "model" in lowered and ("unavailable" in lowered or "not found" in lowered):
         return "The configured Amazon Bedrock model is unavailable."
     return "Repository analysis failed."
+
+
+def _readiness_scan_status(
+    assessments: list[TransparencyAssessment],
+) -> ScanStatus:
+    statuses = {assessment.status for assessment in assessments}
+    if ReadinessStatus.ACTION_REQUIRED in statuses:
+        return ScanStatus.ACTION_REQUIRED
+    if assessments and statuses == {ReadinessStatus.PASS}:
+        return ScanStatus.PASS
+    return ScanStatus.COMPLETED
 
 
 _scan_service: ScanService | None = None

@@ -1,6 +1,12 @@
 from pydantic import BaseModel, Field
 
-from app.models.analysis import AIInteractionFlow, AIUsage, ScanStatus
+from app.models.analysis import (
+    AIInteractionFlow,
+    AIUsage,
+    Finding,
+    ScanStatus,
+    TransparencyAssessment,
+)
 
 
 class RepositorySummary(BaseModel):
@@ -18,6 +24,8 @@ class Scan(BaseModel):
     summary: RepositorySummary | None = None
     ai_usages: list[AIUsage] = Field(default_factory=list)
     ai_interactions: list[AIInteractionFlow] = Field(default_factory=list)
+    article50_assessments: list[TransparencyAssessment] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
     error: str | None = None
     events: list[str] = Field(default_factory=list)
 

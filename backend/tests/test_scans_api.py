@@ -10,10 +10,13 @@ from app.models import (
     AIInteractionFlow,
     AIInvestigationResult,
     AIUsage,
+    Article50AnalysisResult,
     Evidence,
     EvidenceType,
+    ReadinessStatus,
     RepositorySummary,
     ScanStatus,
+    TransparencyAssessment,
 )
 from app.services.scan_service import ScanService, get_scan_service
 from app.services.workspace_service import WorkspaceService
@@ -80,6 +83,27 @@ class FakeAIAnalyzer:
         )
 
 
+class FakeArticle50Analyzer:
+    def analyze(self, scan_id: str, interactions: list[AIInteractionFlow]):
+        return Article50AnalysisResult(
+            assessments=[
+                TransparencyAssessment(
+                    interaction_id=interactions[0].id,
+                    rule_id="ARTICLE_50_1_AI_INTERACTION_DISCLOSURE",
+                    status=ReadinessStatus.ACTION_REQUIRED,
+                    disclosure_detected=False,
+                    explanation=(
+                        "A direct user-facing AI interaction was detected, but no clear "
+                        "transparency disclosure was found in the relevant interface."
+                    ),
+                    evidence=interactions[0].evidence,
+                    inspected_files=["frontend/src/App.tsx"],
+                    confidence=0.9,
+                )
+            ]
+        )
+
+
 @pytest.fixture
 def client(tmp_path):
     settings = Settings(workspace_path=tmp_path)
@@ -89,6 +113,7 @@ def client(tmp_path):
         repository_service=FakeRepositoryService(),
         analyzer_factory=FakeAnalyzer,
         ai_analyzer_factory=FakeAIAnalyzer,
+        article50_analyzer_factory=FakeArticle50Analyzer,
     )
     app.dependency_overrides[get_scan_service] = lambda: service
     with TestClient(app) as test_client:
@@ -105,11 +130,13 @@ def test_create_and_get_scan_without_network_or_aws(client: TestClient) -> None:
     assert response.status_code == 201
     scan = response.json()
     assert scan["repository_url"] == "https://github.com/example/repository"
-    assert scan["status"] == ScanStatus.COMPLETED
+    assert scan["status"] == ScanStatus.ACTION_REQUIRED
     assert scan["summary"]["frameworks"] == ["React", "FastAPI"]
     assert scan["ai_usages"][0]["provider"] == "Amazon Bedrock"
     assert scan["ai_interactions"][0]["user_facing"] is True
     assert scan["ai_interactions"][0]["evidence"][0]["line"] == 1
+    assert scan["article50_assessments"][0]["status"] == "ACTION_REQUIRED"
+    assert scan["findings"][0]["title"] == "Missing AI interaction disclosure"
     assert scan["error"] is None
     assert scan["events"][-1] == "Repository analysis completed"
 

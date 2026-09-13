@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models import AIInteractionFlow, AIUsage, Finding
+from app.models import AIInteractionFlow, AIUsage, Finding, ReadinessStatus
 
 
 def test_finding_confidence_must_be_between_zero_and_one() -> None:
@@ -15,6 +15,7 @@ def test_finding_confidence_must_be_between_zero_and_one() -> None:
             evidence=[],
             affected_files=["src/chat.tsx"],
             confidence=1.1,
+            status=ReadinessStatus.ACTION_REQUIRED,
         )
 
 

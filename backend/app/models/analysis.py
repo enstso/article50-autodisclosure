@@ -13,6 +13,12 @@ class ScanStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class ReadinessStatus(StrEnum):
+    PASS = "PASS"
+    ACTION_REQUIRED = "ACTION_REQUIRED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
 class EvidenceType(StrEnum):
     AI_USAGE = "AI_USAGE"
     USER_INTERACTION = "USER_INTERACTION"
@@ -21,6 +27,8 @@ class EvidenceType(StrEnum):
     MODEL_CALL = "MODEL_CALL"
     MODEL_CONFIGURATION = "MODEL_CONFIGURATION"
     DISCLOSURE = "DISCLOSURE"
+    DISCLOSURE_ABSENCE = "DISCLOSURE_ABSENCE"
+    UI_CONTEXT = "UI_CONTEXT"
 
 
 class Evidence(BaseModel):
@@ -39,6 +47,33 @@ class Finding(BaseModel):
     evidence: list[Evidence]
     affected_files: list[str]
     confidence: float = Field(ge=0.0, le=1.0)
+    status: ReadinessStatus = ReadinessStatus.NEEDS_REVIEW
+
+
+class Article50Rule(BaseModel):
+    id: str
+    title: str
+    description: str
+    source_url: str
+    source_reference: str
+
+
+class TransparencyAssessment(BaseModel):
+    interaction_id: str
+    rule_id: str
+    status: ReadinessStatus
+    disclosure_detected: bool | None
+    disclosure_text: str | None = None
+    disclosure_file: str | None = None
+    disclosure_line: int | None = None
+    explanation: str
+    evidence: list[Evidence] = Field(default_factory=list)
+    inspected_files: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class Article50AnalysisResult(BaseModel):
+    assessments: list[TransparencyAssessment] = Field(default_factory=list)
 
 
 class AIUsage(BaseModel):
@@ -79,3 +114,4 @@ class RepositoryAnalysis(BaseModel):
     findings: list[Finding]
     ai_usages: list[AIUsage] = Field(default_factory=list)
     ai_interactions: list[AIInteractionFlow] = Field(default_factory=list)
+    article50_assessments: list[TransparencyAssessment] = Field(default_factory=list)

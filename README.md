@@ -23,9 +23,9 @@ Detect
 → Verify
 ```
 
-The current proof of concept securely clones a public GitHub repository and lets Strands agents
-investigate its architecture and reconstruct evidence-backed, user-facing AI interaction paths through
-bounded read-only tools. Article 50 decisions and remediation are intentionally not implemented yet.
+The current proof of concept securely clones a public GitHub repository, reconstructs evidence-backed
+user-facing AI interaction paths, and assesses whether a relevant AI transparency disclosure appears
+in the interface. Remediation and patch generation are intentionally not implemented yet.
 
 ## Stack
 
@@ -109,6 +109,8 @@ Completed scans contain:
 - deterministic and agent-validated `ai_usages`;
 - confirmed or partial `ai_interactions` with UI, endpoint, handler, provider, model, confidence, and
   source evidence;
+- evidence-backed `article50_assessments` using `PASS`, `ACTION_REQUIRED`, or `NEEDS_REVIEW`;
+- `findings` for potential transparency gaps and cases that need manual review;
 - short operational `events` without model chain-of-thought.
 
 Only public `https://github.com/{owner}/{repository}` URLs are accepted. Each scan gets an isolated
@@ -123,11 +125,27 @@ is checked against the real repository-relative file and line and replaced with 
 snippet. A user-facing flow requires evidence for the client caller, API route, backend link, and model
 invocation.
 
+Article 50 readiness uses one centralized MVP rule,
+`ARTICLE_50_1_AI_INTERACTION_DISCLOSURE`. Deterministic heuristics first inspect the confirmed
+interaction entrypoint, directly related UI components, parent components, and easily discoverable
+translations. Only rendered UI text and user-visible attributes are candidates. README text, comments,
+variable names, backend logs, dependencies, and unrelated AI mentions cannot produce a passing result.
+The Article 50 Strands agent receives those bounded candidates and read-only inspection tools; a final
+validator rechecks disclosure evidence against the repository before generating assessments and
+findings.
+
+`PASS` means a clear, relevant disclosure was detected. `ACTION_REQUIRED` identifies a potential
+transparency gap in a confirmed user-facing interaction. `NEEDS_REVIEW` is used when the flow, text, or
+visibility is ambiguous. Confidence represents evidence completeness, not a probability of legal
+compliance. The product provides a readiness assessment and does not provide legal advice or certify
+compliance.
+
 ## AWS status
 
-The real Strands-to-Bedrock integration is implemented. Automated tests replace the agent and clone
-operations with local fakes, so they need neither AWS credentials nor network access. Live Bedrock
-validation may remain pending while the AWS account is under verification.
+The real Strands-to-Bedrock integration is implemented for repository, interaction, and Article 50
+analysis. Automated tests replace agent and clone operations with local fakes, so they need neither AWS
+credentials nor network access. Live Bedrock validation may remain pending while the AWS account is
+under verification.
 
 See [docs/architecture.md](docs/architecture.md) for the initial module boundaries.
 

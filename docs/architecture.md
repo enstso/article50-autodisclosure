@@ -11,8 +11,8 @@ FastAPI application
     ├── core      configuration and cross-cutting concerns
     ├── models    workflow domain models
     ├── services  scan, workspace, and shallow-clone orchestration
-    ├── agents    Strands repository and AI interaction investigators
-    └── tools     bounded repository, AI, route, endpoint, and symbol inspection
+    ├── agents    Strands repository, AI interaction, and Article 50 investigators
+    └── tools     bounded repository, AI-flow, and disclosure inspection
 ```
 
 ## Repository investigation flow
@@ -28,6 +28,11 @@ Validate GitHub HTTPS URL
 → let the AI interaction agent investigate targeted source paths
 → verify every proposed evidence item against actual files and lines
 → calibrate confidence from UI/API/backend/model evidence completeness
+→ identify UI files associated with each confirmed interaction
+→ search those files deterministically for rendered AI disclosure text
+→ invoke the Article 50 Strands agent with bounded candidates and read-only tools
+→ validate readiness outcomes and disclosure evidence
+→ generate findings and map the aggregate readiness status
 → retain the scan result in memory
 → remove the temporary workspace
 ```
@@ -52,3 +57,23 @@ An installed dependency alone can appear as a detector signal but cannot become 
 A confirmed user-facing interaction requires evidence spanning a client endpoint call, an API route, a
 backend handler/service link, and an actual model invocation. Incomplete or background-only usage remains
 an `AIUsage` without an invented frontend connection.
+
+## Article 50 readiness boundary
+
+The MVP evaluates only `ARTICLE_50_1_AI_INTERACTION_DISCLOSURE`. Its metadata and official source
+reference are centralized in `app/core/article50_rules.py`. It does not attempt a general EU AI Act
+assessment and does not automate the legal exception for cases where the AI nature may be obvious from
+context.
+
+`DisclosureInspector` starts from the Ticket 03 `frontend_entrypoint`, follows bounded relative UI
+imports, identifies direct parent components, and extracts likely rendered text from JSX nodes,
+user-visible attributes, rendered constants, and imported translation files. It never executes cloned
+code. A README, source comment, backend log, dependency, or unrendered variable cannot become disclosure
+evidence.
+
+The Article 50 agent reasons over this deterministic shortlist. `TransparencyAssessmentValidator`
+then establishes the final result: explicit and relevant UI evidence produces `PASS`; a complete
+user-facing trace with no candidate produces `ACTION_REQUIRED`; incomplete, ambiguous, or dynamically
+uncertain context produces `NEEDS_REVIEW`. Absence is explained from the inspected scope and complete
+flow—it is never represented by fabricated source evidence. Ticket 04 remains read-only and produces no
+code patch.

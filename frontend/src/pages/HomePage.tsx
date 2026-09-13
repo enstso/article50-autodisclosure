@@ -3,7 +3,17 @@ import { FormEvent, useEffect, useState } from "react";
 import { getHealth } from "../api/health";
 import { createScan } from "../api/scans";
 import { ApiConnectionStatus } from "../components/ApiConnectionStatus";
-import type { AIInteractionFlow, ApiStatus, Evidence, Scan } from "../types/api";
+import type {
+  AIInteractionFlow,
+  ApiStatus,
+  Evidence,
+  Finding,
+  ReadinessStatus,
+  Scan,
+  TransparencyAssessment,
+} from "../types/api";
+
+const RESULT_STATUSES = new Set(["COMPLETED", "ACTION_REQUIRED", "PASS"]);
 
 export function HomePage() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
@@ -118,7 +128,7 @@ export function HomePage() {
           </div>
         )}
 
-        {scan?.status === "COMPLETED" && scan.summary && (
+        {scan && RESULT_STATUSES.has(scan.status) && scan.summary && (
           <section className="mt-8 rounded-xl border border-slate-200 bg-white p-6 shadow-panel sm:p-8">
             <div className="flex flex-col gap-2 border-b border-slate-200 pb-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -128,7 +138,11 @@ export function HomePage() {
                 <p className="mt-1 break-all text-sm text-slate-500">{scan.repository_url}</p>
               </div>
               <span className="w-fit rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
-                Completed
+                {scan.status === "PASS"
+                  ? "Ready"
+                  : scan.status === "ACTION_REQUIRED"
+                    ? "Action required"
+                    : "Completed"}
               </span>
             </div>
 
@@ -157,6 +171,8 @@ export function HomePage() {
               </div>
             )}
 
+            <Article50Readiness scan={scan} />
+
             <AIInteractions scan={scan} />
 
             <div className="border-t border-slate-200 pt-7">
@@ -175,6 +191,235 @@ export function HomePage() {
       </main>
     </div>
   );
+}
+
+function Article50Readiness({ scan }: { scan: Scan }) {
+  const assessments = scan.article50_assessments;
+  const status: ReadinessStatus | null = scan.status === "PASS"
+    ? "PASS"
+    : scan.status === "ACTION_REQUIRED"
+      ? "ACTION_REQUIRED"
+      : assessments.some((assessment) => assessment.status === "NEEDS_REVIEW")
+        ? "NEEDS_REVIEW"
+        : null;
+
+  if (status === null) {
+    return (
+      <div className="border-t border-slate-200 py-7">
+        <h2 className="text-sm font-semibold text-slate-900">Article 50 Readiness</h2>
+        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <p className="text-sm font-medium text-slate-800">No confirmed interaction to assess</p>
+          <p className="mt-1 text-sm text-slate-500">
+            The scan did not establish a complete user-facing AI interaction path.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const presentation = readinessPresentation(status);
+  return (
+    <div className="border-t border-slate-200 py-7">
+      <h2 className="text-sm font-semibold text-slate-900">Article 50 Readiness</h2>
+      <div className={`mt-4 rounded-xl border p-5 sm:p-6 ${presentation.panelClass}`}>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className={`text-xs font-semibold uppercase tracking-wider ${presentation.accentClass}`}>
+              {presentation.label}
+            </p>
+            <h3 className="mt-1 text-xl font-semibold text-slate-950">{presentation.title}</h3>
+            <p className="mt-2 text-sm text-slate-600">{presentation.description}</p>
+          </div>
+          <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${presentation.badgeClass}`}>
+            {presentation.badge}
+          </span>
+        </div>
+      </div>
+
+      {assessments.length > 0 && (
+        <div className="mt-5 space-y-5">
+          {assessments.map((assessment) => (
+            <AssessmentCard key={assessment.interaction_id} assessment={assessment} scan={scan} />
+          ))}
+        </div>
+      )}
+
+      {scan.findings.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Findings</h3>
+          <div className="mt-3 space-y-3">
+            {scan.findings.map((finding) => <FindingCard key={finding.id} finding={finding} scan={scan} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssessmentCard({
+  assessment,
+  scan,
+}: {
+  assessment: TransparencyAssessment;
+  scan: Scan;
+}) {
+  const interaction = scan.ai_interactions.find(
+    (candidate) => candidate.id === assessment.interaction_id,
+  );
+  const disclosureEvidence = assessment.evidence.filter(
+    (evidence) => evidence.type === "DISCLOSURE",
+  );
+  const flow = interaction ? interactionFlow(interaction) : [];
+
+  return (
+    <article className="rounded-lg border border-slate-200 bg-white p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            {assessment.rule_id.replace(/_/g, " ")}
+          </p>
+          <h3 className="mt-1 text-base font-semibold text-slate-900">
+            {interaction?.name ?? "AI interaction"}
+          </h3>
+        </div>
+        <p className="text-sm font-semibold text-slate-800">
+          {Math.round(assessment.confidence * 100)}% confidence
+        </p>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-slate-600">{assessment.explanation}</p>
+
+      {flow.length > 0 && (
+        <div className="mt-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Reconstructed AI flow
+          </p>
+          <ol className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-stretch">
+            {flow.map((step, index) => (
+              <li key={`${step.label}-${step.value}`} className="flex min-w-0 flex-1 items-center gap-2">
+                <div className="h-full min-w-0 flex-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    {step.label}
+                  </span>
+                  <code className="mt-1 block break-all text-[11px] text-slate-800">{step.value}</code>
+                </div>
+                {index < flow.length - 1 && <span className="text-slate-400">→</span>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+          Disclosure search
+        </p>
+        <p className="mt-3 text-xs font-medium text-slate-700">Inspected</p>
+        <ul className="mt-1 space-y-1">
+          {assessment.inspected_files.map((file) => (
+            <li key={file}><code className="break-all text-xs text-slate-600">{file}</code></li>
+          ))}
+        </ul>
+        <p className="mt-3 text-xs font-medium text-slate-700">Result</p>
+        <p className="mt-1 text-sm text-slate-600">
+          {assessment.disclosure_detected
+            ? `Disclosure detected: “${assessment.disclosure_text}”`
+            : assessment.disclosure_detected === false
+              ? "No relevant disclosure detected"
+              : "Disclosure context requires manual review"}
+        </p>
+      </div>
+
+      {disclosureEvidence.length > 0 && (
+        <div className="mt-4 space-y-3">
+          {disclosureEvidence.map((evidence, index) => (
+            <EvidenceItem key={`${evidence.file}-${evidence.line}-${index}`} evidence={evidence} />
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function FindingCard({ finding, scan }: { finding: Finding; scan: Scan }) {
+  const interaction = scan.ai_interactions.find(
+    (candidate) => candidate.id === finding.id.replace("article50-", ""),
+  );
+  return (
+    <article className="rounded-lg border border-amber-200 bg-amber-50/50 p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-amber-800">
+            {finding.severity} · {finding.status.replace(/_/g, " ")}
+          </p>
+          <h4 className="mt-1 text-base font-semibold text-slate-900">{finding.title}</h4>
+        </div>
+        <p className="text-sm font-semibold text-slate-800">
+          {Math.round(finding.confidence * 100)}%
+        </p>
+      </div>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{finding.explanation}</p>
+      <dl className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div>
+          <dt className="text-xs font-medium text-slate-500">Affected interaction</dt>
+          <dd className="mt-1 text-sm text-slate-800">{interaction?.name ?? "AI interaction"}</dd>
+        </div>
+        <div>
+          <dt className="text-xs font-medium text-slate-500">Affected files</dt>
+          <dd className="mt-1 space-y-1">
+            {finding.affected_files.map((file) => (
+              <code key={file} className="block break-all text-xs text-slate-700">{file}</code>
+            ))}
+          </dd>
+        </div>
+      </dl>
+    </article>
+  );
+}
+
+function readinessPresentation(status: ReadinessStatus) {
+  if (status === "PASS") {
+    return {
+      label: "Pass",
+      title: "Disclosure detected",
+      description: "A clear AI transparency disclosure appears in the interaction experience.",
+      badge: "Transparency ready",
+      panelClass: "border-emerald-200 bg-emerald-50/60",
+      accentClass: "text-emerald-700",
+      badgeClass: "bg-emerald-100 text-emerald-800",
+    };
+  }
+  if (status === "ACTION_REQUIRED") {
+    return {
+      label: "Action required",
+      title: "Potential transparency gap",
+      description: "A confirmed user-facing AI interaction has no clear disclosure in its interface.",
+      badge: "Review before release",
+      panelClass: "border-amber-300 bg-amber-50",
+      accentClass: "text-amber-800",
+      badgeClass: "bg-amber-200 text-amber-950",
+    };
+  }
+  return {
+    label: "Needs review",
+    title: "Manual review recommended",
+    description: "The available interface evidence is incomplete or ambiguous.",
+    badge: "Context uncertain",
+    panelClass: "border-sky-200 bg-sky-50/60",
+    accentClass: "text-sky-800",
+    badgeClass: "bg-sky-100 text-sky-900",
+  };
+}
+
+function interactionFlow(interaction: AIInteractionFlow) {
+  return [
+    { label: "Frontend", value: interaction.frontend_entrypoint },
+    { label: "API", value: interaction.api_endpoint },
+    { label: "Backend", value: interaction.backend_handler },
+    {
+      label: "Model",
+      value: [interaction.ai_provider, interaction.ai_model].filter(Boolean).join(" · "),
+    },
+  ].filter((step): step is { label: string; value: string } => Boolean(step.value));
 }
 
 function AIInteractions({ scan }: { scan: Scan }) {
@@ -214,15 +459,7 @@ function AIInteractions({ scan }: { scan: Scan }) {
 }
 
 function AIInteractionCard({ interaction }: { interaction: AIInteractionFlow }) {
-  const flow = [
-    { label: "Frontend", value: interaction.frontend_entrypoint },
-    { label: "API", value: interaction.api_endpoint },
-    { label: "Backend", value: interaction.backend_handler },
-    {
-      label: "Model",
-      value: [interaction.ai_provider, interaction.ai_model].filter(Boolean).join(" · "),
-    },
-  ].filter((step): step is { label: string; value: string } => Boolean(step.value));
+  const flow = interactionFlow(interaction);
 
   return (
     <article className="rounded-lg border border-amber-200 bg-amber-50/40 p-5 sm:p-6">

@@ -29,7 +29,9 @@ export type EvidenceType =
   | "BACKEND_HANDLER"
   | "MODEL_CALL"
   | "MODEL_CONFIGURATION"
-  | "DISCLOSURE";
+  | "DISCLOSURE"
+  | "DISCLOSURE_ABSENCE"
+  | "UI_CONTEXT";
 
 export interface Evidence {
   file: string;
@@ -63,6 +65,34 @@ export interface AIInteractionFlow {
   confidence: number;
 }
 
+export type ReadinessStatus = "PASS" | "ACTION_REQUIRED" | "NEEDS_REVIEW";
+
+export interface TransparencyAssessment {
+  interaction_id: string;
+  rule_id: string;
+  status: ReadinessStatus;
+  disclosure_detected: boolean | null;
+  disclosure_text: string | null;
+  disclosure_file: string | null;
+  disclosure_line: number | null;
+  explanation: string;
+  evidence: Evidence[];
+  inspected_files: string[];
+  confidence: number;
+}
+
+export interface Finding {
+  id: string;
+  rule: string;
+  severity: string;
+  title: string;
+  explanation: string;
+  affected_files: string[];
+  evidence: Evidence[];
+  confidence: number;
+  status: ReadinessStatus;
+}
+
 export interface Scan {
   id: string;
   repository_url: string;
@@ -70,6 +100,8 @@ export interface Scan {
   summary: RepositorySummary | null;
   ai_usages: AIUsage[];
   ai_interactions: AIInteractionFlow[];
+  article50_assessments: TransparencyAssessment[];
+  findings: Finding[];
   error: string | null;
   events: string[];
 }
