@@ -64,6 +64,11 @@ npm run dev
 
 Open `http://localhost:5173`. Vite proxies `/api` requests to the local backend, so the page should display **API Connected** when both processes are running.
 
+For a deterministic presentation flow, choose **Try Demo Repository**, then **Analyze Repository**.
+The controlled local fixture uses the real scan, proposal validation, approval, patch application,
+and verification services with mocked model responses. The UI labels this state **Mock model
+enabled**; ordinary public GitHub scans remain configured for Amazon Bedrock.
+
 To target a different API, copy the root `.env.example` to `frontend/.env` and set `VITE_API_BASE_URL` to its origin (for example, `http://localhost:8000`).
 
 ### Verification
@@ -169,6 +174,8 @@ POST /api/patches/{patch_id}/apply
 Only `APPROVED` patches can enter `APPLYING → APPLIED → VERIFIED`; an applied or verified patch cannot
 be applied twice. The response includes a stored verification result with the previous and new
 readiness states, disclosure evidence, and `PASSED`, `FAILED`, or `NEEDS_REVIEW`.
+The same result can be restored after a page refresh with
+`GET /api/patches/{patch_id}/verification`.
 
 The scan service retains an isolated workspace only when a safe remediation is available. The
 remediation agent sees a bounded source snapshot through one read-only tool.

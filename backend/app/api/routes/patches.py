@@ -14,7 +14,7 @@ from app.core.exceptions import (
     RemediationAgentError,
     RemediationContextError,
 )
-from app.models import PatchApplyResponse, PatchProposal
+from app.models import PatchApplyResponse, PatchProposal, VerificationResult
 from app.services.patch_service import PatchService, get_patch_service
 from app.services.scan_service import ScanService, _safe_error_message, get_scan_service
 
@@ -44,6 +44,26 @@ def get_patch(
 ) -> PatchProposal:
     try:
         return patch_service.get(patch_id)
+    except Exception as error:
+        raise _patch_http_error(error) from error
+
+
+@router.get("/patches/{patch_id}/verification", response_model=VerificationResult)
+def get_patch_verification(
+    patch_id: str,
+    patch_service: PatchService = Depends(get_patch_service),
+) -> VerificationResult:
+    try:
+        patch_service.get(patch_id)
+        verification = patch_service.get_verification_for_patch(patch_id)
+        if verification is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Patch verification not found.",
+            )
+        return verification
+    except HTTPException:
+        raise
     except Exception as error:
         raise _patch_http_error(error) from error
 

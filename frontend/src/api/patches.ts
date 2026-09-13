@@ -1,4 +1,4 @@
-import type { PatchApplyResponse, PatchProposal } from "../types/api";
+import type { PatchApplyResponse, PatchProposal, VerificationResult } from "../types/api";
 import { apiUrl, responseError } from "./client";
 
 async function patchRequest<T>(path: string, body?: object): Promise<T> {
@@ -24,6 +24,17 @@ export async function getPatch(patchId: string): Promise<PatchProposal> {
     throw await responseError(response);
   }
   return response.json() as Promise<PatchProposal>;
+}
+
+export async function getPatchVerification(patchId: string): Promise<VerificationResult> {
+  const response = await fetch(
+    apiUrl(`/api/patches/${encodeURIComponent(patchId)}/verification`),
+    { headers: { Accept: "application/json" } },
+  );
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+  return response.json() as Promise<VerificationResult>;
 }
 
 export function generatePatch(findingId: string): Promise<PatchProposal> {

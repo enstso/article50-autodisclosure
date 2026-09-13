@@ -30,6 +30,7 @@ from app.core.exceptions import (
     RemediationAgentError,
     RemediationContextError,
 )
+from app.demo import DemoRemediationGenerator
 from app.models import (
     Evidence,
     EvidenceType,
@@ -67,6 +68,8 @@ class PatchContextProvider(Protocol):
     def append_event(self, scan_id: str, event: str) -> None: ...
 
     def verify_patch(self, proposal: PatchProposal) -> VerificationResult: ...
+
+    def is_demo_scan(self, scan_id: str) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -210,7 +213,13 @@ class PatchService:
         context_provider.append_event(scan_id, "Inspecting affected UI component")
         context_provider.append_event(scan_id, "Preparing minimal patch")
         try:
-            plan = RemediationPlan.model_validate(self.remediation_factory().propose(context))
+            is_demo_scan = getattr(context_provider, "is_demo_scan", lambda _scan_id: False)
+            generator = (
+                DemoRemediationGenerator()
+                if is_demo_scan(scan_id)
+                else self.remediation_factory()
+            )
+            plan = RemediationPlan.model_validate(generator.propose(context))
         except ValidationError as error:
             raise RemediationAgentError(
                 "The remediation agent returned an invalid structured result."
@@ -384,6 +393,18 @@ class PatchService:
     def get_verification(self, verification_id: str) -> VerificationResult | None:
         with self._lock:
             result = self._verifications.get(verification_id)
+            return result.model_copy(deep=True) if result is not None else None
+
+    def get_verification_for_patch(self, patch_id: str) -> VerificationResult | None:
+        with self._lock:
+            result = next(
+                (
+                    verification
+                    for verification in self._verifications.values()
+                    if verification.patch_id == patch_id
+                ),
+                None,
+            )
             return result.model_copy(deep=True) if result is not None else None
 
     def _create_snapshot(

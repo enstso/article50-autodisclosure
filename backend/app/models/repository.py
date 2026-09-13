@@ -4,6 +4,7 @@ from app.models.analysis import (
     AIInteractionFlow,
     AIUsage,
     Finding,
+    ModelMode,
     ScanStatus,
     TransparencyAssessment,
 )
@@ -20,6 +21,7 @@ class RepositorySummary(BaseModel):
 class Scan(BaseModel):
     id: str
     repository_url: str
+    model_mode: ModelMode = ModelMode.LIVE
     status: ScanStatus = ScanStatus.PENDING
     summary: RepositorySummary | None = None
     ai_usages: list[AIUsage] = Field(default_factory=list)

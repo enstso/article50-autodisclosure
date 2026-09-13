@@ -15,12 +15,20 @@ from app.agents import (
 )
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AutoDisclosureError
+from app.demo import (
+    DEMO_REPOSITORY_URL,
+    DemoAIInteractionAnalyzer,
+    DemoArticle50Analyzer,
+    DemoRepositoryAnalyzer,
+    materialize_demo_repository,
+)
 from app.models import (
     AIInteractionFlow,
     AIInvestigationResult,
     Article50AnalysisResult,
     Finding,
     FindingResolution,
+    ModelMode,
     PatchProposal,
     ReadinessStatus,
     RemediationContext,
@@ -74,36 +82,60 @@ class ScanService:
         self._lock = Lock()
 
     def create_scan(self, repository_url: str) -> Scan:
-        scan = Scan(id=str(uuid4()), repository_url=repository_url.strip())
+        requested_repository = repository_url.strip()
+        demo_mode = requested_repository == DEMO_REPOSITORY_URL
+        scan = Scan(
+            id=str(uuid4()),
+            repository_url=requested_repository,
+            model_mode=ModelMode.DEMO if demo_mode else ModelMode.LIVE,
+        )
         self._save(scan)
         workspace_created = False
 
         try:
-            scan.repository_url = validate_repository_url(repository_url)
-            scan.events.append("Repository URL validated")
+            if demo_mode:
+                scan.events.append("Controlled demo repository selected")
+            else:
+                scan.repository_url = validate_repository_url(repository_url)
+                scan.events.append("Repository URL validated")
 
             self.workspace_service.create_workspace(scan.id)
             workspace_created = True
             scan.status = ScanStatus.CLONING
-            scan.events.append("Cloning public GitHub repository")
+            scan.events.append(
+                "Loading controlled demo repository"
+                if demo_mode
+                else "Cloning public GitHub repository"
+            )
             self._save(scan)
 
             repository_path = self.workspace_service.get_repository_path(scan.id)
-            self.repository_service.clone_repository(scan.repository_url, repository_path)
-            metadata = self.repository_service.get_repository_metadata(repository_path)
-            scan.events.append(f"Repository cloned at commit {str(metadata['commit'])[:7]}")
+            if demo_mode:
+                materialize_demo_repository(repository_path)
+                metadata = {"commit": "demo001"}
+                scan.events.append("Demo repository loaded")
+            else:
+                self.repository_service.clone_repository(scan.repository_url, repository_path)
+                metadata = self.repository_service.get_repository_metadata(repository_path)
+                scan.events.append(f"Repository cloned at commit {str(metadata['commit'])[:7]}")
 
             scan.status = ScanStatus.ANALYZING
             scan.events.append("Repository agent started")
             scan.events.append("Inspecting repository structure and relevant source files")
             self._save(scan)
 
-            summary = self.analyzer_factory().analyze(scan.id)
+            repository_analyzer = (
+                DemoRepositoryAnalyzer() if demo_mode else self.analyzer_factory()
+            )
+            summary = repository_analyzer.analyze(scan.id)
             scan.summary = RepositorySummary.model_validate(summary)
 
             scan.events.append("Searching for AI dependencies and model invocations")
             self._save(scan)
-            investigation = self.ai_analyzer_factory().analyze(scan.id)
+            interaction_analyzer = (
+                DemoAIInteractionAnalyzer() if demo_mode else self.ai_analyzer_factory()
+            )
+            investigation = interaction_analyzer.analyze(scan.id)
             validated_investigation = AIInvestigationResult.model_validate(investigation)
             scan.ai_usages = validated_investigation.ai_usages
             scan.ai_interactions = validated_investigation.ai_interactions
@@ -126,7 +158,12 @@ class ScanService:
             scan.events.append("Inspecting user-facing AI interface")
             scan.events.append("Searching for AI disclosure")
             self._save(scan)
-            article50_result = self.article50_analyzer_factory().analyze(
+            article50_analyzer = (
+                DemoArticle50Analyzer(self.workspace_service)
+                if demo_mode
+                else self.article50_analyzer_factory()
+            )
+            article50_result = article50_analyzer.analyze(
                 scan.id, scan.ai_interactions
             )
             validated_article50 = Article50AnalysisResult.model_validate(article50_result)
@@ -169,6 +206,10 @@ class ScanService:
             scan = self._scans.get(scan_id)
             return scan.model_copy(deep=True) if scan else None
 
+    def is_demo_scan(self, scan_id: str) -> bool:
+        scan = self.get_scan(scan_id)
+        return scan is not None and scan.model_mode == ModelMode.DEMO
+
     def get_finding(self, finding_id: str) -> tuple[str, Finding] | None:
         with self._lock:
             for scan in self._scans.values():
@@ -208,7 +249,12 @@ class ScanService:
         previous_status = context.assessment.status
         self.append_event(proposal.scan_id, "Verifying transparency disclosure")
         try:
-            result = self.article50_analyzer_factory().analyze(
+            analyzer = (
+                DemoArticle50Analyzer(self.workspace_service)
+                if scan.model_mode == ModelMode.DEMO
+                else self.article50_analyzer_factory()
+            )
+            result = analyzer.analyze(
                 proposal.scan_id, [context.interaction]
             )
             validated = Article50AnalysisResult.model_validate(result)

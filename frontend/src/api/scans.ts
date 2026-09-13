@@ -15,7 +15,7 @@ export async function createScan(repositoryUrl: string): Promise<Scan> {
     throw await responseError(response);
   }
 
-  return response.json() as Promise<Scan>;
+  return normalizeScan(await response.json());
 }
 
 export async function getScan(scanId: string): Promise<Scan> {
@@ -27,5 +27,18 @@ export async function getScan(scanId: string): Promise<Scan> {
     throw await responseError(response);
   }
 
-  return response.json() as Promise<Scan>;
+  return normalizeScan(await response.json());
+}
+
+export function normalizeScan(payload: unknown): Scan {
+  const scan = payload as Scan;
+  return {
+    ...scan,
+    model_mode: scan.model_mode ?? "LIVE",
+    ai_usages: scan.ai_usages ?? [],
+    ai_interactions: scan.ai_interactions ?? [],
+    article50_assessments: scan.article50_assessments ?? [],
+    findings: scan.findings ?? [],
+    events: scan.events ?? [],
+  };
 }

@@ -43,6 +43,11 @@ class FindingResolution(StrEnum):
     RESOLVED = "RESOLVED"
 
 
+class ModelMode(StrEnum):
+    LIVE = "LIVE"
+    DEMO = "DEMO"
+
+
 class EvidenceType(StrEnum):
     AI_USAGE = "AI_USAGE"
     USER_INTERACTION = "USER_INTERACTION"

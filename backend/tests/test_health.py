@@ -12,4 +12,6 @@ def test_health() -> None:
     assert response.json() == {
         "status": "ok",
         "service": "article50-autodisclosure-api",
+        "model_mode": "LIVE",
+        "model_provider": "Amazon Bedrock",
     }

@@ -1,8 +1,12 @@
 export type ApiStatus = "checking" | "connected" | "offline";
 
+export type ModelMode = "LIVE" | "DEMO";
+
 export interface HealthResponse {
   status: "ok";
   service: string;
+  model_mode: ModelMode;
+  model_provider: string;
 }
 
 export type ScanStatus =
@@ -153,6 +157,7 @@ export interface PatchApplyResponse {
 export interface Scan {
   id: string;
   repository_url: string;
+  model_mode: ModelMode;
   status: ScanStatus;
   summary: RepositorySummary | null;
   ai_usages: AIUsage[];
