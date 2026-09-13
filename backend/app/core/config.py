@@ -14,12 +14,13 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     aws_region: str = "us-east-1"
-    bedrock_model_id: str = ""
+    bedrock_model_id: str = "global.anthropic.claude-sonnet-4-6"
     workspace_path: Path = Path("./workspace")
+    max_repository_size_mb: int = Field(default=50, gt=0)
+    max_file_size_kb: int = Field(default=250, gt=0)
     frontend_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

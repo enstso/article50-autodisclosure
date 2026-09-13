@@ -13,4 +13,3 @@ def test_health() -> None:
         "status": "ok",
         "service": "article50-autodisclosure-api",
     }
-
