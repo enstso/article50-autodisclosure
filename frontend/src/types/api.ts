@@ -5,3 +5,71 @@ export interface HealthResponse {
   service: string;
 }
 
+export type ScanStatus =
+  | "PENDING"
+  | "CLONING"
+  | "ANALYZING"
+  | "COMPLETED"
+  | "ACTION_REQUIRED"
+  | "PASS"
+  | "FAILED";
+
+export interface RepositorySummary {
+  languages: string[];
+  frameworks: string[];
+  architecture_summary: string;
+  important_files: string[];
+  potential_ai_integrations: string[];
+}
+
+export type EvidenceType =
+  | "AI_USAGE"
+  | "USER_INTERACTION"
+  | "API_ROUTE"
+  | "BACKEND_HANDLER"
+  | "MODEL_CALL"
+  | "MODEL_CONFIGURATION"
+  | "DISCLOSURE";
+
+export interface Evidence {
+  file: string;
+  line: number | null;
+  snippet: string;
+  type: EvidenceType;
+}
+
+export interface AIUsage {
+  provider: string | null;
+  sdk: string | null;
+  model: string | null;
+  file: string;
+  line: number | null;
+  purpose: string | null;
+  evidence: Evidence[];
+  confidence: number;
+}
+
+export interface AIInteractionFlow {
+  id: string;
+  name: string;
+  user_facing: boolean;
+  frontend_entrypoint: string | null;
+  api_endpoint: string | null;
+  backend_handler: string | null;
+  ai_provider: string | null;
+  ai_model: string | null;
+  flow_summary: string;
+  evidence: Evidence[];
+  confidence: number;
+}
+
+export interface Scan {
+  id: string;
+  repository_url: string;
+  status: ScanStatus;
+  summary: RepositorySummary | null;
+  ai_usages: AIUsage[];
+  ai_interactions: AIInteractionFlow[];
+  error: string | null;
+  events: string[];
+}

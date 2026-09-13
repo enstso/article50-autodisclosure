@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models import Finding
+from app.models import AIInteractionFlow, AIUsage, Finding
 
 
 def test_finding_confidence_must_be_between_zero_and_one() -> None:
@@ -17,3 +17,25 @@ def test_finding_confidence_must_be_between_zero_and_one() -> None:
             confidence=1.1,
         )
 
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        lambda: AIUsage(
+            file="service.py",
+            evidence=[],
+            confidence=-0.01,
+        ),
+        lambda: AIInteractionFlow(
+            id="flow",
+            name="Chat",
+            user_facing=True,
+            flow_summary="A chat flow.",
+            evidence=[],
+            confidence=1.01,
+        ),
+    ],
+)
+def test_ai_result_confidence_is_bounded(model) -> None:
+    with pytest.raises(ValidationError):
+        model()
