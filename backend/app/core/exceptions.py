@@ -48,3 +48,35 @@ class BedrockModelUnavailableError(AutoDisclosureError):
 
 class RepositoryAgentError(AutoDisclosureError):
     pass
+
+
+class FindingNotFoundError(AutoDisclosureError):
+    pass
+
+
+class FindingNotRemediableError(AutoDisclosureError):
+    pass
+
+
+class RemediationContextError(AutoDisclosureError):
+    pass
+
+
+class RemediationAgentError(AutoDisclosureError):
+    pass
+
+
+class InvalidPatchError(AutoDisclosureError):
+    pass
+
+
+class PatchTooLargeError(InvalidPatchError):
+    pass
+
+
+class PatchNotFoundError(AutoDisclosureError):
+    pass
+
+
+class InvalidPatchTransitionError(AutoDisclosureError):
+    pass

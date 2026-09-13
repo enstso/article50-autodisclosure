@@ -4,15 +4,15 @@ Article 50 AutoDisclosure is split into independently runnable frontend and back
 
 ```text
 Browser (React)
-    │ POST /api/scans, GET /api/scans/{id}
+    │ scan, patch generation, review, approval, and rejection endpoints
     ▼
 FastAPI application
     ├── api       HTTP routes and schemas
     ├── core      configuration and cross-cutting concerns
     ├── models    workflow domain models
-    ├── services  scan, workspace, and shallow-clone orchestration
-    ├── agents    Strands repository, AI interaction, and Article 50 investigators
-    └── tools     bounded repository, AI-flow, and disclosure inspection
+    ├── services  scan, workspace, clone, readiness, and patch orchestration
+    ├── agents    Strands repository, interaction, readiness, and remediation agents
+    └── tools     bounded repository, AI-flow, disclosure, and remediation context inspection
 ```
 
 ## Repository investigation flow
@@ -33,6 +33,7 @@ Validate GitHub HTTPS URL
 → invoke the Article 50 Strands agent with bounded candidates and read-only tools
 → validate readiness outcomes and disclosure evidence
 → generate findings and map the aggregate readiness status
+→ retain a bounded source snapshot for each remediable frontend finding
 → retain the scan result in memory
 → remove the temporary workspace
 ```
@@ -75,5 +76,23 @@ The Article 50 agent reasons over this deterministic shortlist. `TransparencyAss
 then establishes the final result: explicit and relevant UI evidence produces `PASS`; a complete
 user-facing trace with no candidate produces `ACTION_REQUIRED`; incomplete, ambiguous, or dynamically
 uncertain context produces `NEEDS_REVIEW`. Absence is explained from the inspected scope and complete
-flow—it is never represented by fabricated source evidence. Ticket 04 remains read-only and produces no
-code patch.
+flow—it is never represented by fabricated source evidence.
+
+## Remediation and human approval boundary
+
+Ticket 05 operates only on an `ACTION_REQUIRED` finding for the primary Article 50 disclosure rule.
+Before workspace cleanup, `ScanService` records the affected interaction, assessment, finding, verified
+frontend source, and a SHA-256 digest in a process-local snapshot. The remediation agent later receives
+only bounded excerpts of that snapshot through `get_remediation_context`; it has no shell, write, patch,
+Git, or workspace tool.
+
+The agent returns a structured `RemediationPlan`. `UnifiedDiffValidator` permits one existing file from
+the captured context, rejects absolute paths, traversal, `.git`, binary patches, unknown files, empty or
+oversized diffs, and dry-applies every hunk against the exact snapshot. It also reconstructs the proposed
+source and uses the UI-text extractor to confirm that the added disclosure is explicit and likely
+rendered—not merely a comment or unrendered variable.
+
+`PatchService` stores validated proposals as `READY_FOR_REVIEW`. The API permits only
+`READY_FOR_REVIEW → APPROVED` or `READY_FOR_REVIEW → REJECTED`; timestamps and an optional rejection
+reason preserve the decision. No transition applies source changes. Patch application, rescanning, and
+verification belong to Ticket 06.

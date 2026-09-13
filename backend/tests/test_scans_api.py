@@ -14,10 +14,12 @@ from app.models import (
     Evidence,
     EvidenceType,
     ReadinessStatus,
+    RemediationPlan,
     RepositorySummary,
     ScanStatus,
     TransparencyAssessment,
 )
+from app.services.patch_service import PatchService, get_patch_service
 from app.services.scan_service import ScanService, get_scan_service
 from app.services.workspace_service import WorkspaceService
 
@@ -104,6 +106,30 @@ class FakeArticle50Analyzer:
         )
 
 
+class FakeRemediationGenerator:
+    def propose(self, context) -> RemediationPlan:
+        return RemediationPlan(
+            title="Add AI disclosure to fixture interface",
+            rationale="Adds an explicit notice in the existing main element.",
+            disclosure_text="You are interacting with an AI assistant.",
+            affected_files=["frontend/src/App.tsx"],
+            unified_diff="""--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -1,3 +1,8 @@
+ export function App() {
+-  return <main>Fixture application</main>;
++  return (
++    <main>
++      <p>You are interacting with an AI assistant.</p>
++      Fixture application
++    </main>
++  );
+ }
+""",
+            confidence=0.92,
+        )
+
+
 @pytest.fixture
 def client(tmp_path):
     settings = Settings(workspace_path=tmp_path)
@@ -115,7 +141,12 @@ def client(tmp_path):
         ai_analyzer_factory=FakeAIAnalyzer,
         article50_analyzer_factory=FakeArticle50Analyzer,
     )
+    patch_service = PatchService(
+        settings=settings,
+        remediation_factory=FakeRemediationGenerator,
+    )
     app.dependency_overrides[get_scan_service] = lambda: service
+    app.dependency_overrides[get_patch_service] = lambda: patch_service
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -137,6 +168,7 @@ def test_create_and_get_scan_without_network_or_aws(client: TestClient) -> None:
     assert scan["ai_interactions"][0]["evidence"][0]["line"] == 1
     assert scan["article50_assessments"][0]["status"] == "ACTION_REQUIRED"
     assert scan["findings"][0]["title"] == "Missing AI interaction disclosure"
+    assert scan["findings"][0]["remediation_available"] is True
     assert scan["error"] is None
     assert scan["events"][-1] == "Repository analysis completed"
 
@@ -161,3 +193,54 @@ def test_get_unknown_scan_returns_controlled_404(client: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Scan not found."}
+
+
+def test_generate_and_approve_patch_without_applying_repository_changes(
+    client: TestClient,
+) -> None:
+    scan = client.post(
+        "/api/scans",
+        json={"repository_url": "https://github.com/example/repository"},
+    ).json()
+    finding_id = scan["findings"][0]["id"]
+
+    generated_response = client.post(f"/api/findings/{finding_id}/patch")
+
+    assert generated_response.status_code == 201
+    proposal = generated_response.json()
+    assert proposal["status"] == "READY_FOR_REVIEW"
+    assert proposal["affected_files"] == ["frontend/src/App.tsx"]
+    assert proposal["unified_diff"]
+    assert proposal["disclosure_text"] == "You are interacting with an AI assistant."
+
+    approved_response = client.post(f"/api/patches/{proposal['id']}/approve")
+
+    assert approved_response.status_code == 200
+    assert approved_response.json()["status"] == "APPROVED"
+    assert approved_response.json()["approved_at"] is not None
+    updated_scan = client.get(f"/api/scans/{scan['id']}").json()
+    assert updated_scan["findings"][0]["patch_proposal_id"] == proposal["id"]
+    assert updated_scan["events"][-1] == "Patch approved"
+
+    invalid_transition = client.post(f"/api/patches/{proposal['id']}/reject")
+    assert invalid_transition.status_code == 409
+
+
+def test_reject_patch_and_unknown_resources_are_controlled(client: TestClient) -> None:
+    scan = client.post(
+        "/api/scans",
+        json={"repository_url": "https://github.com/example/repository"},
+    ).json()
+    finding_id = scan["findings"][0]["id"]
+    proposal = client.post(f"/api/findings/{finding_id}/patch").json()
+
+    rejected = client.post(
+        f"/api/patches/{proposal['id']}/reject",
+        json={"reason": "Use different wording."},
+    )
+
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "REJECTED"
+    assert rejected.json()["rejection_reason"] == "Use different wording."
+    assert client.post("/api/findings/unknown/patch").status_code == 404
+    assert client.get("/api/patches/unknown").status_code == 404

@@ -193,50 +193,7 @@ class DisclosureInspector:
         return found
 
     def _visible_strings(self, file: str, source: str) -> list[dict[str, Any]]:
-        cleaned = _without_comments(source)
-        items: list[dict[str, Any]] = []
-
-        patterns = [VISIBLE_ATTRIBUTE_PATTERN, JSX_TEXT_PATTERN, JSX_STRING_EXPRESSION_PATTERN]
-        for pattern in patterns:
-            for match in pattern.finditer(cleaned):
-                text = " ".join(match.group("text").split())
-                if not _looks_like_user_text(text):
-                    continue
-                line = cleaned.count("\n", 0, match.start("text")) + 1
-                items.append(_visible_item(source, line, text))
-
-        rendered_names = {
-            name
-            for name in re.findall(r"\{\s*([A-Za-z_$][\w$]*)\s*\}", cleaned)
-        }
-        for match in CONSTANT_STRING_PATTERN.finditer(cleaned):
-            if match.group("name") not in rendered_names:
-                continue
-            text = " ".join(match.group("text").split())
-            if _looks_like_user_text(text):
-                line = cleaned.count("\n", 0, match.start("text")) + 1
-                items.append(_visible_item(source, line, text))
-
-        path = PurePosixPath(file)
-        translation_file = path.suffix.lower() == ".json" and any(
-            part.casefold() in {"i18n", "locale", "locales", "translations"}
-            for part in path.parts
-        )
-        if translation_file:
-            for match in JSON_VALUE_PATTERN.finditer(cleaned):
-                text = " ".join(match.group("text").split())
-                if _looks_like_user_text(text):
-                    line = cleaned.count("\n", 0, match.start("text")) + 1
-                    items.append(_visible_item(source, line, text))
-
-        unique: list[dict[str, Any]] = []
-        seen: set[tuple[int, str]] = set()
-        for item in items:
-            key = (item["line"], item["text"].casefold())
-            if key not in seen:
-                seen.add(key)
-                unique.append(item)
-        return unique
+        return extract_user_visible_strings(file, source)
 
 
 def _normalize_relative(path: PurePosixPath) -> str:
@@ -272,6 +229,53 @@ def _without_comments(source: str) -> str:
 
 def _looks_like_user_text(text: str) -> bool:
     return bool(text and re.search(r"[A-Za-z]", text) and not text.startswith(("http://", "https://")))
+
+
+def extract_user_visible_strings(file: str, source: str) -> list[dict[str, Any]]:
+    """Extract likely rendered strings without executing frontend source."""
+
+    cleaned = _without_comments(source)
+    items: list[dict[str, Any]] = []
+    patterns = [VISIBLE_ATTRIBUTE_PATTERN, JSX_TEXT_PATTERN, JSX_STRING_EXPRESSION_PATTERN]
+    for pattern in patterns:
+        for match in pattern.finditer(cleaned):
+            text = " ".join(match.group("text").split())
+            if not _looks_like_user_text(text):
+                continue
+            line = cleaned.count("\n", 0, match.start("text")) + 1
+            items.append(_visible_item(source, line, text))
+
+    rendered_names = {
+        name for name in re.findall(r"\{\s*([A-Za-z_$][\w$]*)\s*\}", cleaned)
+    }
+    for match in CONSTANT_STRING_PATTERN.finditer(cleaned):
+        if match.group("name") not in rendered_names:
+            continue
+        text = " ".join(match.group("text").split())
+        if _looks_like_user_text(text):
+            line = cleaned.count("\n", 0, match.start("text")) + 1
+            items.append(_visible_item(source, line, text))
+
+    path = PurePosixPath(file)
+    translation_file = path.suffix.lower() == ".json" and any(
+        part.casefold() in {"i18n", "locale", "locales", "translations"}
+        for part in path.parts
+    )
+    if translation_file:
+        for match in JSON_VALUE_PATTERN.finditer(cleaned):
+            text = " ".join(match.group("text").split())
+            if _looks_like_user_text(text):
+                line = cleaned.count("\n", 0, match.start("text")) + 1
+                items.append(_visible_item(source, line, text))
+
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for item in items:
+        key = (item["line"], item["text"].casefold())
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
 
 
 def _visible_item(source: str, line: int, text: str) -> dict[str, Any]:

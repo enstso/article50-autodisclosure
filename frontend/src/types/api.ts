@@ -91,6 +91,35 @@ export interface Finding {
   evidence: Evidence[];
   confidence: number;
   status: ReadinessStatus;
+  remediation_available: boolean;
+  patch_proposal_id: string | null;
+}
+
+export type PatchStatus =
+  | "DRAFT"
+  | "READY_FOR_REVIEW"
+  | "APPROVED"
+  | "REJECTED"
+  | "APPLIED"
+  | "FAILED";
+
+export interface PatchProposal {
+  id: string;
+  scan_id: string;
+  finding_id: string;
+  status: PatchStatus;
+  title: string;
+  rationale: string;
+  affected_files: string[];
+  disclosure_text: string | null;
+  unified_diff: string;
+  original_snippets: Evidence[];
+  proposed_snippets: Evidence[];
+  confidence: number;
+  created_at: string;
+  approved_at: string | null;
+  rejected_at: string | null;
+  rejection_reason: string | null;
 }
 
 export interface Scan {

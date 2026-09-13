@@ -1,13 +1,15 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { getHealth } from "../api/health";
-import { createScan } from "../api/scans";
+import { approvePatch, generatePatch, rejectPatch } from "../api/patches";
+import { createScan, getScan } from "../api/scans";
 import { ApiConnectionStatus } from "../components/ApiConnectionStatus";
 import type {
   AIInteractionFlow,
   ApiStatus,
   Evidence,
   Finding,
+  PatchProposal,
   ReadinessStatus,
   Scan,
   TransparencyAssessment,
@@ -171,7 +173,7 @@ export function HomePage() {
               </div>
             )}
 
-            <Article50Readiness scan={scan} />
+            <Article50Readiness scan={scan} onScanChange={setScan} />
 
             <AIInteractions scan={scan} />
 
@@ -193,7 +195,16 @@ export function HomePage() {
   );
 }
 
-function Article50Readiness({ scan }: { scan: Scan }) {
+function Article50Readiness({
+  scan,
+  onScanChange,
+}: {
+  scan: Scan;
+  onScanChange: (scan: Scan) => void;
+}) {
+  const [proposals, setProposals] = useState<Record<string, PatchProposal>>({});
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [patchError, setPatchError] = useState<string | null>(null);
   const assessments = scan.article50_assessments;
   const status: ReadinessStatus | null = scan.status === "PASS"
     ? "PASS"
@@ -202,6 +213,56 @@ function Article50Readiness({ scan }: { scan: Scan }) {
       : assessments.some((assessment) => assessment.status === "NEEDS_REVIEW")
         ? "NEEDS_REVIEW"
         : null;
+
+  async function refreshScanActivity() {
+    try {
+      onScanChange(await getScan(scan.id));
+    } catch {
+      // The proposal state remains usable if the optional activity refresh fails.
+    }
+  }
+
+  async function handleGenerate(finding: Finding) {
+    setPendingAction(`generate-${finding.id}`);
+    setPatchError(null);
+    try {
+      const proposal = await generatePatch(finding.id);
+      setProposals((current) => ({ ...current, [finding.id]: proposal }));
+      await refreshScanActivity();
+    } catch (error) {
+      setPatchError(error instanceof Error ? error.message : "Patch generation failed.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function handleApprove(findingId: string, patchId: string) {
+    setPendingAction(`approve-${patchId}`);
+    setPatchError(null);
+    try {
+      const proposal = await approvePatch(patchId);
+      setProposals((current) => ({ ...current, [findingId]: proposal }));
+      await refreshScanActivity();
+    } catch (error) {
+      setPatchError(error instanceof Error ? error.message : "Patch approval failed.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function handleReject(findingId: string, patchId: string) {
+    setPendingAction(`reject-${patchId}`);
+    setPatchError(null);
+    try {
+      const proposal = await rejectPatch(patchId);
+      setProposals((current) => ({ ...current, [findingId]: proposal }));
+      await refreshScanActivity();
+    } catch (error) {
+      setPatchError(error instanceof Error ? error.message : "Patch rejection failed.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
 
   if (status === null) {
     return (
@@ -248,8 +309,31 @@ function Article50Readiness({ scan }: { scan: Scan }) {
         <div className="mt-6">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Findings</h3>
           <div className="mt-3 space-y-3">
-            {scan.findings.map((finding) => <FindingCard key={finding.id} finding={finding} scan={scan} />)}
+            {scan.findings.map((finding) => (
+              <div key={finding.id} className="space-y-3">
+                <FindingCard
+                  finding={finding}
+                  scan={scan}
+                  generating={pendingAction === `generate-${finding.id}`}
+                  hasProposal={Boolean(proposals[finding.id])}
+                  onGenerate={() => handleGenerate(finding)}
+                />
+                {proposals[finding.id] && (
+                  <PatchReview
+                    proposal={proposals[finding.id]}
+                    pendingAction={pendingAction}
+                    onApprove={() => handleApprove(finding.id, proposals[finding.id].id)}
+                    onReject={() => handleReject(finding.id, proposals[finding.id].id)}
+                  />
+                )}
+              </div>
+            ))}
           </div>
+          {patchError && (
+            <p className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800" role="alert">
+              {patchError}
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -340,7 +424,19 @@ function AssessmentCard({
   );
 }
 
-function FindingCard({ finding, scan }: { finding: Finding; scan: Scan }) {
+function FindingCard({
+  finding,
+  scan,
+  generating,
+  hasProposal,
+  onGenerate,
+}: {
+  finding: Finding;
+  scan: Scan;
+  generating: boolean;
+  hasProposal: boolean;
+  onGenerate: () => void;
+}) {
   const interaction = scan.ai_interactions.find(
     (candidate) => candidate.id === finding.id.replace("article50-", ""),
   );
@@ -372,7 +468,143 @@ function FindingCard({ finding, scan }: { finding: Finding; scan: Scan }) {
           </dd>
         </div>
       </dl>
+      {finding.status === "ACTION_REQUIRED" && finding.remediation_available && !hasProposal && (
+        <div className="mt-5 border-t border-amber-200 pt-4">
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={generating}
+            className="rounded-md bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+          >
+            {generating ? "Generating fix…" : "Generate Fix"}
+          </button>
+          <p className="mt-2 text-xs text-slate-600">
+            The agent will prepare a proposal for review. It will not modify your repository.
+          </p>
+        </div>
+      )}
     </article>
+  );
+}
+
+function PatchReview({
+  proposal,
+  pendingAction,
+  onApprove,
+  onReject,
+}: {
+  proposal: PatchProposal;
+  pendingAction: string | null;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  const awaitingReview = proposal.status === "READY_FOR_REVIEW";
+  return (
+    <section className="overflow-hidden rounded-lg border border-slate-300 bg-white shadow-sm">
+      <div className="border-b border-slate-200 px-5 py-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-indigo-700">
+              Proposed Fix
+            </p>
+            <h4 className="mt-1 text-base font-semibold text-slate-950">{proposal.title}</h4>
+          </div>
+          <span className="w-fit rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+            {proposal.status.replace(/_/g, " ")}
+          </span>
+        </div>
+        <p className="mt-3 text-sm leading-6 text-slate-600">{proposal.rationale}</p>
+      </div>
+
+      <div className="grid gap-5 px-5 py-5 sm:grid-cols-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Disclosure</p>
+          <p className="mt-2 text-sm font-medium text-slate-900">“{proposal.disclosure_text}”</p>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Affected files
+          </p>
+          <div className="mt-2 space-y-1">
+            {proposal.affected_files.map((file) => (
+              <code key={file} className="block break-all text-xs text-slate-700">{file}</code>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="border-t border-slate-200 px-5 py-5">
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Diff preview</p>
+          <p className="text-xs text-slate-500">{Math.round(proposal.confidence * 100)}% confidence</p>
+        </div>
+        <DiffViewer diff={proposal.unified_diff} />
+      </div>
+
+      <div className="border-t border-slate-200 bg-slate-50 px-5 py-4">
+        {awaitingReview ? (
+          <>
+            <p className="text-sm font-semibold text-slate-900">
+              The agent has NOT modified your repository yet.
+            </p>
+            <p className="mt-1 text-xs text-slate-600">
+              Approval records your decision only. Applying and verifying the patch is a later step.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={onApprove}
+                disabled={pendingAction !== null}
+                className="rounded-md bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-400"
+              >
+                {pendingAction === `approve-${proposal.id}` ? "Approving…" : "Approve Fix"}
+              </button>
+              <button
+                type="button"
+                onClick={onReject}
+                disabled={pendingAction !== null}
+                className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400"
+              >
+                {pendingAction === `reject-${proposal.id}` ? "Rejecting…" : "Reject"}
+              </button>
+            </div>
+          </>
+        ) : proposal.status === "APPROVED" ? (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+            <p className="text-sm font-semibold text-emerald-900">Fix approved.</p>
+            <p className="mt-1 text-sm text-emerald-800">Ready to apply and verify in Ticket 06.</p>
+          </div>
+        ) : (
+          <div className="rounded-md border border-slate-200 bg-white p-3">
+            <p className="text-sm font-semibold text-slate-800">Fix rejected.</p>
+            <p className="mt-1 text-sm text-slate-600">The proposal was not applied.</p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function DiffViewer({ diff }: { diff: string }) {
+  return (
+    <pre className="mt-3 max-h-96 overflow-auto rounded-md bg-slate-950 py-3 text-xs leading-5 text-slate-200">
+      <code>
+        {diff.split("\n").map((line, index) => {
+          const lineClass = line.startsWith("+") && !line.startsWith("+++")
+            ? "bg-emerald-950/70 text-emerald-200"
+            : line.startsWith("-") && !line.startsWith("---")
+              ? "bg-rose-950/70 text-rose-200"
+              : line.startsWith("@@")
+                ? "text-sky-300"
+                : "";
+          return (
+            <span key={`${index}-${line}`} className={`block min-w-max px-4 ${lineClass}`}>
+              {line || " "}
+            </span>
+          );
+        })}
+      </code>
+    </pre>
   );
 }
 

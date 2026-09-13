@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     workspace_path: Path = Path("./workspace")
     max_repository_size_mb: int = Field(default=50, gt=0)
     max_file_size_kb: int = Field(default=250, gt=0)
+    max_patch_lines: int = Field(default=120, gt=0)
     frontend_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
 

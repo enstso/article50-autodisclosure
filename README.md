@@ -25,7 +25,8 @@ Detect
 
 The current proof of concept securely clones a public GitHub repository, reconstructs evidence-backed
 user-facing AI interaction paths, and assesses whether a relevant AI transparency disclosure appears
-in the interface. Remediation and patch generation are intentionally not implemented yet.
+in the interface. For eligible findings, it can generate and validate a minimal patch proposal for
+explicit human approval. Applying the patch remains intentionally unavailable.
 
 ## Stack
 
@@ -88,6 +89,7 @@ runtime environment credentials, and IAM roles. Never add AWS keys to an `.env` 
 | `WORKSPACE_PATH` | `./workspace` | Isolated repository workspaces |
 | `MAX_REPOSITORY_SIZE_MB` | `50` | Maximum cloned repository size |
 | `MAX_FILE_SIZE_KB` | `250` | Maximum source content loaded by a tool |
+| `MAX_PATCH_LINES` | `120` | Maximum unified-diff size accepted for review |
 
 ## Repository analysis API
 
@@ -140,12 +142,39 @@ visibility is ambiguous. Confidence represents evidence completeness, not a prob
 compliance. The product provides a readiness assessment and does not provide legal advice or certify
 compliance.
 
+## Remediation proposal API
+
+Only an `ACTION_REQUIRED` finding for `ARTICLE_50_1_AI_INTERACTION_DISCLOSURE` with a verified frontend
+entrypoint exposes `remediation_available=true`. Generate its proposal with:
+
+```http
+POST /api/findings/{finding_id}/patch
+```
+
+Retrieve it with `GET /api/patches/{patch_id}`, then record a human decision with either:
+
+```http
+POST /api/patches/{patch_id}/approve
+POST /api/patches/{patch_id}/reject
+```
+
+The reject endpoint optionally accepts `{"reason":"..."}`. Approval changes only the stored proposal
+status; Ticket 05 contains no patch application, source write, Git commit, push, or automatic test
+execution.
+
+Before the cloned workspace is removed, the scan service retains only a bounded in-memory snapshot of
+the eligible UI component. The remediation agent sees a small source excerpt through one read-only tool.
+Its unified diff is dry-applied in memory and rejected unless paths are safe, the target is the allowed
+existing frontend file, hunks match the original source, the explicit disclosure is rendered as visible
+UI text, and the configured line limit is respected. Patch proposals and snapshots are process-local and
+are lost when the API restarts.
+
 ## AWS status
 
-The real Strands-to-Bedrock integration is implemented for repository, interaction, and Article 50
-analysis. Automated tests replace agent and clone operations with local fakes, so they need neither AWS
-credentials nor network access. Live Bedrock validation may remain pending while the AWS account is
-under verification.
+The real Strands-to-Bedrock integration is implemented for repository, interaction, Article 50, and
+remediation analysis. Automated tests replace agent and clone operations with local fakes, so they need
+neither AWS credentials nor network access. Live Bedrock validation may remain pending while the AWS
+account is under verification.
 
 See [docs/architecture.md](docs/architecture.md) for the initial module boundaries.
 

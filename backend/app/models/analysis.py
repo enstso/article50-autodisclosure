@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -17,6 +18,15 @@ class ReadinessStatus(StrEnum):
     PASS = "PASS"
     ACTION_REQUIRED = "ACTION_REQUIRED"
     NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class PatchStatus(StrEnum):
+    DRAFT = "DRAFT"
+    READY_FOR_REVIEW = "READY_FOR_REVIEW"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    APPLIED = "APPLIED"
+    FAILED = "FAILED"
 
 
 class EvidenceType(StrEnum):
@@ -48,6 +58,8 @@ class Finding(BaseModel):
     affected_files: list[str]
     confidence: float = Field(ge=0.0, le=1.0)
     status: ReadinessStatus = ReadinessStatus.NEEDS_REVIEW
+    remediation_available: bool = False
+    patch_proposal_id: str | None = None
 
 
 class Article50Rule(BaseModel):
@@ -74,6 +86,34 @@ class TransparencyAssessment(BaseModel):
 
 class Article50AnalysisResult(BaseModel):
     assessments: list[TransparencyAssessment] = Field(default_factory=list)
+
+
+class RemediationPlan(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    rationale: str = Field(min_length=1, max_length=2000)
+    disclosure_text: str = Field(min_length=1, max_length=500)
+    affected_files: list[str] = Field(min_length=1)
+    unified_diff: str = Field(min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class PatchProposal(BaseModel):
+    id: str
+    scan_id: str
+    finding_id: str
+    status: PatchStatus
+    title: str = Field(min_length=1, max_length=160)
+    rationale: str = Field(min_length=1, max_length=2000)
+    affected_files: list[str] = Field(min_length=1)
+    disclosure_text: str | None = None
+    unified_diff: str = Field(min_length=1)
+    original_snippets: list[Evidence] = Field(default_factory=list)
+    proposed_snippets: list[Evidence] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    created_at: datetime
+    approved_at: datetime | None = None
+    rejected_at: datetime | None = None
+    rejection_reason: str | None = Field(default=None, max_length=500)
 
 
 class AIUsage(BaseModel):
@@ -104,6 +144,20 @@ class AIInteractionFlow(BaseModel):
 class AIInvestigationResult(BaseModel):
     ai_usages: list[AIUsage] = Field(default_factory=list)
     ai_interactions: list[AIInteractionFlow] = Field(default_factory=list)
+
+
+class SourceSnapshot(BaseModel):
+    file: str
+    content: str
+    sha256: str
+
+
+class RemediationContext(BaseModel):
+    scan_id: str
+    finding: Finding
+    assessment: TransparencyAssessment
+    interaction: AIInteractionFlow
+    source_files: list[SourceSnapshot]
 
 
 class RepositoryAnalysis(BaseModel):

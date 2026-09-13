@@ -1,4 +1,6 @@
 from collections.abc import Callable
+from hashlib import sha256
+from pathlib import Path
 from threading import Lock
 from typing import Protocol
 from uuid import uuid4
@@ -16,15 +18,20 @@ from app.models import (
     AIInteractionFlow,
     AIInvestigationResult,
     Article50AnalysisResult,
+    Finding,
     ReadinessStatus,
+    RemediationContext,
     RepositorySummary,
     Scan,
     ScanStatus,
+    SourceSnapshot,
     TransparencyAssessment,
 )
 from app.services.article50_service import build_article50_findings
 from app.services.repository_service import RepositoryService, validate_repository_url
 from app.services.workspace_service import WorkspaceService
+from app.tools.disclosure_tools import UI_SUFFIXES
+from app.tools.repository_tools import RepositoryInspector
 
 
 class RepositoryAnalyzer(Protocol):
@@ -58,6 +65,7 @@ class ScanService:
         self.ai_analyzer_factory = ai_analyzer_factory
         self.article50_analyzer_factory = article50_analyzer_factory
         self._scans: dict[str, Scan] = {}
+        self._remediation_contexts: dict[str, RemediationContext] = {}
         self._lock = Lock()
 
     def create_scan(self, repository_url: str) -> Scan:
@@ -121,6 +129,7 @@ class ScanService:
             scan.findings = build_article50_findings(
                 scan.article50_assessments, scan.ai_interactions
             )
+            self._capture_remediation_contexts(scan)
             for assessment in scan.article50_assessments:
                 if assessment.status == ReadinessStatus.PASS:
                     scan.events.append("AI disclosure detected")
@@ -151,6 +160,85 @@ class ScanService:
         with self._lock:
             scan = self._scans.get(scan_id)
             return scan.model_copy(deep=True) if scan else None
+
+    def get_finding(self, finding_id: str) -> tuple[str, Finding] | None:
+        with self._lock:
+            for scan in self._scans.values():
+                finding = next((item for item in scan.findings if item.id == finding_id), None)
+                if finding is not None:
+                    return scan.id, finding.model_copy(deep=True)
+        return None
+
+    def get_remediation_context(self, finding_id: str) -> RemediationContext | None:
+        with self._lock:
+            context = self._remediation_contexts.get(finding_id)
+            return context.model_copy(deep=True) if context is not None else None
+
+    def link_patch_proposal(self, finding_id: str, patch_id: str) -> None:
+        with self._lock:
+            for scan in self._scans.values():
+                for index, finding in enumerate(scan.findings):
+                    if finding.id == finding_id:
+                        scan.findings[index] = finding.model_copy(
+                            update={"patch_proposal_id": patch_id}, deep=True
+                        )
+                        return
+        raise ValueError("Finding not found while linking patch proposal.")
+
+    def append_event(self, scan_id: str, event: str) -> None:
+        with self._lock:
+            scan = self._scans.get(scan_id)
+            if scan is not None:
+                scan.events.append(event)
+
+    def _capture_remediation_contexts(self, scan: Scan) -> None:
+        assessments = {
+            assessment.interaction_id: assessment
+            for assessment in scan.article50_assessments
+        }
+        interactions = {interaction.id: interaction for interaction in scan.ai_interactions}
+        repository = RepositoryInspector(self.settings, self.workspace_service)
+        contexts: dict[str, RemediationContext] = {}
+        for index, finding in enumerate(scan.findings):
+            if finding.status != ReadinessStatus.ACTION_REQUIRED:
+                continue
+            interaction_id = finding.id.removeprefix("article50-")
+            assessment = assessments.get(interaction_id)
+            interaction = interactions.get(interaction_id)
+            if assessment is None or interaction is None or not interaction.frontend_entrypoint:
+                continue
+            entrypoint = interaction.frontend_entrypoint.replace("\\", "/")
+            entrypoint_parts = entrypoint.casefold().split("/")
+            if (
+                Path(entrypoint).suffix.casefold() not in UI_SUFFIXES
+                or "backend" in entrypoint_parts
+                or entrypoint not in finding.affected_files
+            ):
+                continue
+            try:
+                source = repository.read_source_file(
+                    scan.id, entrypoint
+                )
+            except (AutoDisclosureError, OSError, ValueError):
+                continue
+            content = source["content"]
+            updated_finding = finding.model_copy(update={"remediation_available": True})
+            scan.findings[index] = updated_finding
+            contexts[finding.id] = RemediationContext(
+                scan_id=scan.id,
+                finding=updated_finding,
+                assessment=assessment,
+                interaction=interaction,
+                source_files=[
+                    SourceSnapshot(
+                        file=source["path"],
+                        content=content,
+                        sha256=sha256(content.encode("utf-8")).hexdigest(),
+                    )
+                ],
+            )
+        with self._lock:
+            self._remediation_contexts.update(contexts)
 
     def _save(self, scan: Scan) -> None:
         with self._lock:

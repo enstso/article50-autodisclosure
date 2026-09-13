@@ -5,6 +5,7 @@ from app.tools.ai_detection_tools import (
     search_endpoint_usage,
 )
 from app.tools.disclosure_tools import find_disclosure_candidates, search_ui_text
+from app.tools.remediation_tools import get_remediation_context
 from app.tools.repository_tools import (
     get_repository_structure,
     list_directory,
@@ -18,6 +19,7 @@ __all__ = [
     "find_symbol_references",
     "find_disclosure_candidates",
     "get_repository_structure",
+    "get_remediation_context",
     "list_directory",
     "read_source_file",
     "search_repository",
