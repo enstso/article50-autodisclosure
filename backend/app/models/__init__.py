@@ -7,6 +7,8 @@ from app.models.analysis import (
     Evidence,
     EvidenceType,
     Finding,
+    FindingResolution,
+    PatchApplyResponse,
     PatchProposal,
     PatchStatus,
     ReadinessStatus,
@@ -16,6 +18,8 @@ from app.models.analysis import (
     ScanStatus,
     SourceSnapshot,
     TransparencyAssessment,
+    VerificationResult,
+    VerificationStatus,
 )
 from app.models.repository import RepositorySummary, Scan, ScanCreateRequest
 
@@ -28,6 +32,8 @@ __all__ = [
     "Evidence",
     "EvidenceType",
     "Finding",
+    "FindingResolution",
+    "PatchApplyResponse",
     "PatchProposal",
     "PatchStatus",
     "ReadinessStatus",
@@ -40,4 +46,6 @@ __all__ = [
     "ScanStatus",
     "SourceSnapshot",
     "TransparencyAssessment",
+    "VerificationResult",
+    "VerificationStatus",
 ]

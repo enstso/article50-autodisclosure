@@ -1,3 +1,5 @@
+import shutil
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
@@ -10,6 +12,9 @@ from app.core.exceptions import (
     FindingNotRemediableError,
     InvalidPatchError,
     InvalidPatchTransitionError,
+    PatchAlreadyAppliedError,
+    PatchApplicationError,
+    PatchNotApprovedError,
     PatchTooLargeError,
     RemediationAgentError,
 )
@@ -24,8 +29,11 @@ from app.models import (
     RemediationPlan,
     SourceSnapshot,
     TransparencyAssessment,
+    VerificationResult,
+    VerificationStatus,
 )
 from app.services.patch_service import PatchService, UnifiedDiffValidator
+from app.services.workspace_service import WorkspaceService
 
 FIXTURE_FILE = (
     Path(__file__).parent / "fixtures" / "ai_chat_app" / "frontend" / "src" / "Chat.tsx"
@@ -73,6 +81,40 @@ class FakeContextProvider:
 
     def append_event(self, scan_id: str, event: str) -> None:
         self.events.append(event)
+
+
+class FakeVerificationProvider(FakeContextProvider):
+    def __init__(
+        self,
+        context: RemediationContext,
+        status: VerificationStatus = VerificationStatus.PASSED,
+    ) -> None:
+        super().__init__(context)
+        self.verification_status = status
+
+    def verify_patch(self, proposal) -> VerificationResult:
+        if self.verification_status == VerificationStatus.PASSED:
+            new_status = ReadinessStatus.PASS
+            detected = True
+        elif self.verification_status == VerificationStatus.NEEDS_REVIEW:
+            new_status = ReadinessStatus.NEEDS_REVIEW
+            detected = None
+        else:
+            new_status = ReadinessStatus.ACTION_REQUIRED
+            detected = False
+        return VerificationResult(
+            id="00000000-0000-0000-0000-000000000099",
+            patch_id=proposal.id,
+            scan_id=proposal.scan_id,
+            finding_id=proposal.finding_id,
+            status=self.verification_status,
+            previous_readiness_status=ReadinessStatus.ACTION_REQUIRED,
+            new_readiness_status=new_status,
+            disclosure_detected=detected,
+            explanation="Controlled verification result.",
+            evidence=proposal.proposed_snippets if detected else [],
+            verified_at=datetime.now(UTC),
+        )
 
 
 def _context(status: ReadinessStatus = ReadinessStatus.ACTION_REQUIRED) -> RemediationContext:
@@ -164,7 +206,7 @@ def test_action_required_generates_reviewable_patch_without_mutating_source() ->
     assert approved.approved_at is not None
     assert before == after
     assert provider.patch_id == proposal.id
-    assert provider.events[-1] == "Patch approved"
+    assert provider.events[-1] == "Human approved remediation"
 
 
 def test_ready_patch_can_be_rejected_once_with_optional_reason() -> None:
@@ -266,3 +308,176 @@ def test_diff_validator_rejects_tampered_source_snapshot() -> None:
 
     with pytest.raises(InvalidPatchError, match="integrity"):
         UnifiedDiffValidator().validate(_plan(), context)
+
+
+def _approved_application(
+    tmp_path: Path,
+    verification_status: VerificationStatus = VerificationStatus.PASSED,
+) -> tuple[PatchService, FakeVerificationProvider, str, WorkspaceService]:
+    settings = Settings(workspace_path=tmp_path)
+    workspace = WorkspaceService(settings)
+    context = _context()
+    workspace.create_workspace(context.scan_id)
+    shutil.copytree(
+        Path(__file__).parent / "fixtures" / "ai_chat_app",
+        workspace.get_repository_path(context.scan_id),
+    )
+    provider = FakeVerificationProvider(context, verification_status)
+    service = PatchService(
+        settings=settings,
+        remediation_factory=FakeGenerator,
+        workspace_service=workspace,
+    )
+    proposal = service.generate(context.finding.id, provider)
+    service.approve(proposal.id, provider)
+    return service, provider, proposal.id, workspace
+
+
+def test_approved_patch_is_snapshotted_applied_and_verified(tmp_path: Path) -> None:
+    service, provider, patch_id, workspace = _approved_application(tmp_path)
+    repository_file = workspace.get_repository_path(provider.context.scan_id) / TARGET_FILE
+    original = repository_file.read_text(encoding="utf-8")
+
+    response = service.apply(patch_id, provider)
+
+    assert response.patch_status == PatchStatus.VERIFIED
+    assert response.verification.status == VerificationStatus.PASSED
+    assert "You are chatting with an AI assistant." in repository_file.read_text(
+        encoding="utf-8"
+    )
+    snapshot = workspace.get_snapshot_path(provider.context.scan_id, patch_id) / TARGET_FILE
+    assert snapshot.read_text(encoding="utf-8") == original
+    assert [
+        path.relative_to(snapshot.parents[2]).as_posix()
+        for path in snapshot.parents[2].rglob("*")
+        if path.is_file()
+    ] == [TARGET_FILE]
+    stored = service.get(patch_id)
+    assert stored.applied_at is not None
+    assert stored.verified_at is not None
+    assert stored.modified_files == [TARGET_FILE]
+    assert service.get_verification(response.verification.id) == response.verification
+    assert provider.events[-5:] == [
+        "Validating patch",
+        "Creating safety snapshot",
+        "Applying patch",
+        "Patch applied successfully",
+        "Re-scanning affected interaction",
+    ]
+
+
+@pytest.mark.parametrize("decision", ["ready", "rejected"])
+def test_non_approved_patch_cannot_be_applied(tmp_path: Path, decision: str) -> None:
+    settings = Settings(workspace_path=tmp_path)
+    workspace = WorkspaceService(settings)
+    context = _context()
+    workspace.create_workspace(context.scan_id)
+    shutil.copytree(
+        Path(__file__).parent / "fixtures" / "ai_chat_app",
+        workspace.get_repository_path(context.scan_id),
+    )
+    provider = FakeVerificationProvider(context)
+    service = PatchService(
+        settings=settings,
+        remediation_factory=FakeGenerator,
+        workspace_service=workspace,
+    )
+    proposal = service.generate(context.finding.id, provider)
+    if decision == "rejected":
+        service.reject(proposal.id, provider)
+
+    with pytest.raises(PatchNotApprovedError):
+        service.apply(proposal.id, provider)
+
+
+def test_verified_patch_cannot_be_applied_twice(tmp_path: Path) -> None:
+    service, provider, patch_id, _ = _approved_application(tmp_path)
+    service.apply(patch_id, provider)
+
+    with pytest.raises(PatchAlreadyAppliedError):
+        service.apply(patch_id, provider)
+
+
+@pytest.mark.parametrize(
+    "unsafe_diff,affected_files",
+    [
+        (
+            VALID_DIFF.replace("frontend/src/Chat.tsx", "../../etc/passwd"),
+            ["../../etc/passwd"],
+        ),
+        (
+            VALID_DIFF
+            + "\n--- a/backend/app/main.py\n+++ b/backend/app/main.py\n"
+            + "@@ -1,1 +1,1 @@\n-old\n+new\n",
+            [TARGET_FILE],
+        ),
+    ],
+)
+def test_application_revalidates_paths_and_affected_file_boundary(
+    tmp_path: Path, unsafe_diff: str, affected_files: list[str]
+) -> None:
+    service, provider, patch_id, _ = _approved_application(tmp_path)
+    approved = service.get(patch_id)
+    service._patches[patch_id] = approved.model_copy(
+        update={"unified_diff": unsafe_diff, "affected_files": affected_files}
+    )
+
+    with pytest.raises(InvalidPatchError):
+        service.apply(patch_id, provider)
+
+    assert service.get(patch_id).status == PatchStatus.FAILED
+
+
+def test_failed_write_restores_snapshot_and_marks_patch_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services import patch_service as patch_module
+
+    service, provider, patch_id, workspace = _approved_application(tmp_path)
+    target = workspace.get_repository_path(provider.context.scan_id) / TARGET_FILE
+    original = target.read_bytes()
+
+    def fail_after_write(path: Path, content: str) -> None:
+        path.write_bytes(content.encode("utf-8"))
+        raise OSError("controlled write failure")
+
+    monkeypatch.setattr(patch_module, "_write_mutation_source", fail_after_write)
+
+    with pytest.raises(PatchApplicationError):
+        service.apply(patch_id, provider)
+
+    assert target.read_bytes() == original
+    assert service.get(patch_id).status == PatchStatus.FAILED
+    assert "Rolling back changes" in provider.events
+
+
+def test_failed_semantic_verification_keeps_patch_applied_and_action_required(
+    tmp_path: Path,
+) -> None:
+    service, provider, patch_id, _ = _approved_application(
+        tmp_path, VerificationStatus.FAILED
+    )
+
+    response = service.apply(patch_id, provider)
+
+    assert response.patch_status == PatchStatus.APPLIED
+    assert response.verification.status == VerificationStatus.FAILED
+    assert response.verification.new_readiness_status == ReadinessStatus.ACTION_REQUIRED
+    with pytest.raises(PatchAlreadyAppliedError):
+        service.apply(patch_id, provider)
+
+
+def test_patch_cannot_modify_another_scan_workspace(tmp_path: Path) -> None:
+    service, provider, patch_id, workspace = _approved_application(tmp_path)
+    second_scan_id = "00000000-0000-0000-0000-000000000002"
+    workspace.create_workspace(second_scan_id)
+    shutil.copytree(
+        Path(__file__).parent / "fixtures" / "ai_chat_app",
+        workspace.get_repository_path(second_scan_id),
+    )
+    second_target = workspace.get_repository_path(second_scan_id) / TARGET_FILE
+    second_before = second_target.read_bytes()
+
+    service.apply(patch_id, provider)
+
+    assert second_target.read_bytes() == second_before

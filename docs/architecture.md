@@ -4,7 +4,7 @@ Article 50 AutoDisclosure is split into independently runnable frontend and back
 
 ```text
 Browser (React)
-    │ scan, patch generation, review, approval, and rejection endpoints
+    │ scan, patch generation, review, approval, application, and verification endpoints
     ▼
 FastAPI application
     ├── api       HTTP routes and schemas
@@ -33,9 +33,9 @@ Validate GitHub HTTPS URL
 → invoke the Article 50 Strands agent with bounded candidates and read-only tools
 → validate readiness outcomes and disclosure evidence
 → generate findings and map the aggregate readiness status
-→ retain a bounded source snapshot for each remediable frontend finding
+→ retain the isolated workspace and a bounded source context for each remediable finding
 → retain the scan result in memory
-→ remove the temporary workspace
+→ remove non-remediable or failed temporary workspaces
 ```
 
 The agent receives no shell or file-write tool. The only available operations are structure discovery,
@@ -78,11 +78,11 @@ user-facing trace with no candidate produces `ACTION_REQUIRED`; incomplete, ambi
 uncertain context produces `NEEDS_REVIEW`. Absence is explained from the inspected scope and complete
 flow—it is never represented by fabricated source evidence.
 
-## Remediation and human approval boundary
+## Remediation, application, and verification boundary
 
-Ticket 05 operates only on an `ACTION_REQUIRED` finding for the primary Article 50 disclosure rule.
-Before workspace cleanup, `ScanService` records the affected interaction, assessment, finding, verified
-frontend source, and a SHA-256 digest in a process-local snapshot. The remediation agent later receives
+Remediation operates only on an `ACTION_REQUIRED` finding for the primary Article 50 disclosure rule.
+`ScanService` records the affected interaction, assessment, finding, verified frontend source, and a
+SHA-256 digest in a process-local context. The remediation agent later receives
 only bounded excerpts of that snapshot through `get_remediation_context`; it has no shell, write, patch,
 Git, or workspace tool.
 
@@ -94,5 +94,16 @@ rendered—not merely a comment or unrendered variable.
 
 `PatchService` stores validated proposals as `READY_FOR_REVIEW`. The API permits only
 `READY_FOR_REVIEW → APPROVED` or `READY_FOR_REVIEW → REJECTED`; timestamps and an optional rejection
-reason preserve the decision. No transition applies source changes. Patch application, rescanning, and
-verification belong to Ticket 06.
+reason preserve the decision. Only a later explicit apply request can mutate an approved patch.
+
+Application repeats path, size, binary, diff, allowlist, snapshot-integrity, and current-source checks.
+It stores only affected files under `workspace/{scan_id}/snapshots/{patch_id}`, then uses the same
+deterministic Python hunk applicator used for preflight. Repository manifests before and after the write
+must differ by exactly `PatchProposal.affected_files`, including no `.git` change. A failed mutation is
+restored from the snapshot and becomes `FAILED`; `APPLIED` and `VERIFIED` proposals reject replay.
+
+After a successful write, `ScanService` reuses its Article 50 analyzer for the original interaction and
+updates the existing assessment. Only `ACTION_REQUIRED → PASS` records verification `PASSED`, advances
+the patch to `VERIFIED`, moves the aggregate scan to `PASS`, and resolves the finding. A remaining gap
+records `FAILED` without claiming success; ambiguous or unavailable analysis records `NEEDS_REVIEW`.
+No repository code or shell is exposed or executed anywhere in this loop.

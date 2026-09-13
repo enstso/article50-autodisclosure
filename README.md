@@ -26,7 +26,8 @@ Detect
 The current proof of concept securely clones a public GitHub repository, reconstructs evidence-backed
 user-facing AI interaction paths, and assesses whether a relevant AI transparency disclosure appears
 in the interface. For eligible findings, it can generate and validate a minimal patch proposal for
-explicit human approval. Applying the patch remains intentionally unavailable.
+explicit human approval, safely apply it to the isolated workspace, and re-run the targeted Article 50
+assessment.
 
 ## Stack
 
@@ -158,23 +159,43 @@ POST /api/patches/{patch_id}/approve
 POST /api/patches/{patch_id}/reject
 ```
 
-The reject endpoint optionally accepts `{"reason":"..."}`. Approval changes only the stored proposal
-status; Ticket 05 contains no patch application, source write, Git commit, push, or automatic test
-execution.
+The reject endpoint optionally accepts `{"reason":"..."}`. Approval records the human decision but
+still does not mutate source. Apply an approved proposal with:
 
-Before the cloned workspace is removed, the scan service retains only a bounded in-memory snapshot of
-the eligible UI component. The remediation agent sees a small source excerpt through one read-only tool.
+```http
+POST /api/patches/{patch_id}/apply
+```
+
+Only `APPROVED` patches can enter `APPLYING → APPLIED → VERIFIED`; an applied or verified patch cannot
+be applied twice. The response includes a stored verification result with the previous and new
+readiness states, disclosure evidence, and `PASSED`, `FAILED`, or `NEEDS_REVIEW`.
+
+The scan service retains an isolated workspace only when a safe remediation is available. The
+remediation agent sees a bounded source snapshot through one read-only tool.
 Its unified diff is dry-applied in memory and rejected unless paths are safe, the target is the allowed
 existing frontend file, hunks match the original source, the explicit disclosure is rendered as visible
-UI text, and the configured line limit is respected. Patch proposals and snapshots are process-local and
-are lost when the API restarts.
+UI text, and the configured line limit is respected.
+
+Application repeats every validation against the current file, rejects stale sources, traversal,
+absolute paths, `.git`, binary data, oversized patches, and files outside `affected_files`, then creates
+`workspace/{scan_id}/snapshots/{patch_id}` containing only the affected file. A deterministic Python
+applicator writes no other path; repository-wide before/after hashes detect unexpected mutations. Any
+failure after mutation restores the snapshot and marks the patch `FAILED`.
+
+After a successful write, the existing Article 50 analyzer re-evaluates only the affected interaction.
+`ACTION_REQUIRED → PASS` yields `VERIFIED` and resolves the finding. A remaining gap keeps the patch
+`APPLIED`, the scan `ACTION_REQUIRED`, and records failed verification. No cloned dependency is
+installed, and no repository code, scripts, tests, shell commands, Git commit, or push are executed.
+Scan, patch, and verification records are process-local and are lost when the API restarts; retained
+workspaces currently require operational lifecycle cleanup.
 
 ## AWS status
 
 The real Strands-to-Bedrock integration is implemented for repository, interaction, Article 50, and
-remediation analysis. Automated tests replace agent and clone operations with local fakes, so they need
-neither AWS credentials nor network access. Live Bedrock validation may remain pending while the AWS
-account is under verification.
+remediation analysis. Targeted post-application verification reuses that Article 50 analysis boundary.
+Automated tests replace agent and clone operations with local fakes, so they need neither AWS credentials
+nor network access. Live Bedrock validation may remain pending while the AWS account is under
+verification.
 
 See [docs/architecture.md](docs/architecture.md) for the initial module boundaries.
 

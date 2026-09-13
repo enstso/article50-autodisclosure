@@ -93,15 +93,18 @@ export interface Finding {
   status: ReadinessStatus;
   remediation_available: boolean;
   patch_proposal_id: string | null;
+  resolution: "OPEN" | "RESOLVED";
 }
 
 export type PatchStatus =
   | "DRAFT"
   | "READY_FOR_REVIEW"
   | "APPROVED"
-  | "REJECTED"
+  | "APPLYING"
   | "APPLIED"
-  | "FAILED";
+  | "VERIFIED"
+  | "FAILED"
+  | "REJECTED";
 
 export interface PatchProposal {
   id: string;
@@ -118,8 +121,33 @@ export interface PatchProposal {
   confidence: number;
   created_at: string;
   approved_at: string | null;
+  applied_at: string | null;
+  verified_at: string | null;
+  modified_files: string[];
   rejected_at: string | null;
   rejection_reason: string | null;
+}
+
+export type VerificationStatus = "PENDING" | "PASSED" | "FAILED" | "NEEDS_REVIEW";
+
+export interface VerificationResult {
+  id: string;
+  patch_id: string;
+  scan_id: string;
+  finding_id: string;
+  status: VerificationStatus;
+  previous_readiness_status: ReadinessStatus;
+  new_readiness_status: ReadinessStatus;
+  disclosure_detected: boolean | null;
+  explanation: string;
+  evidence: Evidence[];
+  verified_at: string;
+}
+
+export interface PatchApplyResponse {
+  patch_id: string;
+  patch_status: PatchStatus;
+  verification: VerificationResult;
 }
 
 export interface Scan {

@@ -80,3 +80,23 @@ class PatchNotFoundError(AutoDisclosureError):
 
 class InvalidPatchTransitionError(AutoDisclosureError):
     pass
+
+
+class PatchNotApprovedError(AutoDisclosureError):
+    pass
+
+
+class PatchAlreadyAppliedError(AutoDisclosureError):
+    pass
+
+
+class PatchApplicationError(AutoDisclosureError):
+    pass
+
+
+class PatchRollbackError(PatchApplicationError):
+    pass
+
+
+class PatchVerificationError(AutoDisclosureError):
+    pass

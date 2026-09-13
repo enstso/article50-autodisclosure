@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { getHealth } from "../api/health";
-import { approvePatch, generatePatch, rejectPatch } from "../api/patches";
+import { applyPatch, approvePatch, generatePatch, getPatch, rejectPatch } from "../api/patches";
 import { createScan, getScan } from "../api/scans";
 import { ApiConnectionStatus } from "../components/ApiConnectionStatus";
 import type {
@@ -13,6 +13,7 @@ import type {
   ReadinessStatus,
   Scan,
   TransparencyAssessment,
+  VerificationResult,
 } from "../types/api";
 
 const RESULT_STATUSES = new Set(["COMPLETED", "ACTION_REQUIRED", "PASS"]);
@@ -203,6 +204,7 @@ function Article50Readiness({
   onScanChange: (scan: Scan) => void;
 }) {
   const [proposals, setProposals] = useState<Record<string, PatchProposal>>({});
+  const [verifications, setVerifications] = useState<Record<string, VerificationResult>>({});
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [patchError, setPatchError] = useState<string | null>(null);
   const assessments = scan.article50_assessments;
@@ -259,6 +261,38 @@ function Article50Readiness({
       await refreshScanActivity();
     } catch (error) {
       setPatchError(error instanceof Error ? error.message : "Patch rejection failed.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function handleApply(findingId: string, patchId: string) {
+    setPendingAction(`apply-${patchId}`);
+    setPatchError(null);
+    try {
+      const result = await applyPatch(patchId);
+      setProposals((current) => ({
+        ...current,
+        [findingId]: {
+          ...current[findingId],
+          status: result.patch_status,
+          verified_at: result.verification.verified_at,
+        },
+      }));
+      setVerifications((current) => ({
+        ...current,
+        [findingId]: result.verification,
+      }));
+      await refreshScanActivity();
+    } catch (error) {
+      setPatchError(error instanceof Error ? error.message : "Patch application failed.");
+      try {
+        const proposal = await getPatch(patchId);
+        setProposals((current) => ({ ...current, [findingId]: proposal }));
+      } catch {
+        // Preserve the last review state if the optional status refresh also fails.
+      }
+      await refreshScanActivity();
     } finally {
       setPendingAction(null);
     }
@@ -321,9 +355,11 @@ function Article50Readiness({
                 {proposals[finding.id] && (
                   <PatchReview
                     proposal={proposals[finding.id]}
+                    verification={verifications[finding.id]}
                     pendingAction={pendingAction}
                     onApprove={() => handleApprove(finding.id, proposals[finding.id].id)}
                     onReject={() => handleReject(finding.id, proposals[finding.id].id)}
+                    onApply={() => handleApply(finding.id, proposals[finding.id].id)}
                   />
                 )}
               </div>
@@ -440,14 +476,17 @@ function FindingCard({
   const interaction = scan.ai_interactions.find(
     (candidate) => candidate.id === finding.id.replace("article50-", ""),
   );
+  const resolved = finding.resolution === "RESOLVED";
   return (
-    <article className="rounded-lg border border-amber-200 bg-amber-50/50 p-5">
+    <article className={`rounded-lg border p-5 ${resolved ? "border-emerald-200 bg-emerald-50/50" : "border-amber-200 bg-amber-50/50"}`}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-amber-800">
-            {finding.severity} · {finding.status.replace(/_/g, " ")}
+          <p className={`text-xs font-semibold uppercase tracking-wider ${resolved ? "text-emerald-800" : "text-amber-800"}`}>
+            {resolved ? "Resolved" : `${finding.severity} · ${finding.status.replace(/_/g, " ")}`}
           </p>
-          <h4 className="mt-1 text-base font-semibold text-slate-900">{finding.title}</h4>
+          <h4 className="mt-1 text-base font-semibold text-slate-900">
+            {resolved ? "AI interaction disclosure resolved" : finding.title}
+          </h4>
         </div>
         <p className="text-sm font-semibold text-slate-800">
           {Math.round(finding.confidence * 100)}%
@@ -489,16 +528,21 @@ function FindingCard({
 
 function PatchReview({
   proposal,
+  verification,
   pendingAction,
   onApprove,
   onReject,
+  onApply,
 }: {
   proposal: PatchProposal;
+  verification?: VerificationResult;
   pendingAction: string | null;
   onApprove: () => void;
   onReject: () => void;
+  onApply: () => void;
 }) {
   const awaitingReview = proposal.status === "READY_FOR_REVIEW";
+  const applying = pendingAction === `apply-${proposal.id}`;
   return (
     <section className="overflow-hidden rounded-lg border border-slate-300 bg-white shadow-sm">
       <div className="border-b border-slate-200 px-5 py-4">
@@ -570,18 +614,103 @@ function PatchReview({
             </div>
           </>
         ) : proposal.status === "APPROVED" ? (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
-            <p className="text-sm font-semibold text-emerald-900">Fix approved.</p>
-            <p className="mt-1 text-sm text-emerald-800">Ready to apply and verify in Ticket 06.</p>
-          </div>
+          applying ? (
+            <ApplyProgress />
+          ) : (
+            <div>
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-sm font-semibold text-emerald-900">Fix approved.</p>
+                <p className="mt-1 text-sm text-emerald-800">
+                  The isolated workspace is ready for safe application and verification.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onApply}
+                disabled={pendingAction !== null}
+                className="mt-4 rounded-md bg-indigo-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-600 disabled:cursor-not-allowed disabled:bg-slate-400"
+              >
+                Apply Fix
+              </button>
+            </div>
+          )
+        ) : verification ? (
+          <VerificationComparison proposal={proposal} verification={verification} />
         ) : (
           <div className="rounded-md border border-slate-200 bg-white p-3">
-            <p className="text-sm font-semibold text-slate-800">Fix rejected.</p>
-            <p className="mt-1 text-sm text-slate-600">The proposal was not applied.</p>
+            <p className="text-sm font-semibold text-slate-800">
+              {proposal.status === "FAILED" ? "Patch application failed." : "Fix rejected."}
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              {proposal.status === "FAILED"
+                ? "The safety snapshot preserved the approved source state."
+                : "The proposal was not applied."}
+            </p>
           </div>
         )}
       </div>
     </section>
+  );
+}
+
+function ApplyProgress() {
+  return (
+    <div className="rounded-md border border-indigo-200 bg-indigo-50 p-4" role="status">
+      <p className="text-sm font-semibold text-indigo-950">Applying approved remediation</p>
+      <ol className="mt-3 space-y-2 text-sm text-indigo-900">
+        <li className="flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-indigo-600" />Applying approved patch...</li>
+        <li className="flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-indigo-400" />Re-scanning AI interaction...</li>
+        <li className="flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-indigo-300" />Verifying transparency disclosure...</li>
+      </ol>
+    </div>
+  );
+}
+
+function VerificationComparison({
+  proposal,
+  verification,
+}: {
+  proposal: PatchProposal;
+  verification: VerificationResult;
+}) {
+  const passed = verification.status === "PASSED";
+  const disclosure = verification.evidence.find((item) => item.type === "DISCLOSURE");
+  return (
+    <div className={`rounded-lg border p-4 ${passed ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
+      <p className={`text-sm font-semibold ${passed ? "text-emerald-950" : "text-amber-950"}`}>
+        {passed
+          ? "Fix verified"
+          : verification.status === "FAILED"
+            ? "Patch applied, but verification failed."
+            : "Patch applied; manual verification required."}
+      </p>
+      <p className="mt-1 text-sm text-slate-700">{verification.explanation}</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="rounded-md border border-rose-200 bg-white p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-rose-700">Before</p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">
+            {verification.previous_readiness_status.replace(/_/g, " ")}
+          </p>
+          <p className="mt-2 text-xs text-slate-600">❌ No AI disclosure detected</p>
+        </div>
+        <div className="rounded-md border border-emerald-200 bg-white p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700">After</p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">
+            {verification.new_readiness_status.replace(/_/g, " ")}
+          </p>
+          <p className="mt-2 text-xs text-slate-600">
+            {verification.disclosure_detected
+              ? `✅ “${proposal.disclosure_text}”`
+              : "❌ No qualifying AI disclosure detected"}
+          </p>
+        </div>
+      </div>
+      {disclosure && (
+        <code className="mt-3 block break-all text-xs text-slate-700">
+          AI disclosure detected · {disclosure.file}{disclosure.line ? `:${disclosure.line}` : ""}
+        </code>
+      )}
+    </div>
   );
 }
 

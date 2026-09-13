@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
@@ -19,6 +20,8 @@ from app.models import (
     AIInvestigationResult,
     Article50AnalysisResult,
     Finding,
+    FindingResolution,
+    PatchProposal,
     ReadinessStatus,
     RemediationContext,
     RepositorySummary,
@@ -26,6 +29,8 @@ from app.models import (
     ScanStatus,
     SourceSnapshot,
     TransparencyAssessment,
+    VerificationResult,
+    VerificationStatus,
 )
 from app.services.article50_service import build_article50_findings
 from app.services.repository_service import RepositoryService, validate_repository_url
@@ -146,7 +151,10 @@ class ScanService:
             scan.error = _safe_error_message(error)
             scan.events.append("Repository analysis failed")
         finally:
-            if workspace_created:
+            retain_for_remediation = any(
+                finding.remediation_available for finding in scan.findings
+            )
+            if workspace_created and not retain_for_remediation:
                 try:
                     self.workspace_service.cleanup_workspace(scan.id)
                 except OSError:
@@ -190,6 +198,126 @@ class ScanService:
             scan = self._scans.get(scan_id)
             if scan is not None:
                 scan.events.append(event)
+
+    def verify_patch(self, proposal: PatchProposal) -> VerificationResult:
+        context = self.get_remediation_context(proposal.finding_id)
+        scan = self.get_scan(proposal.scan_id)
+        if context is None or scan is None or context.scan_id != proposal.scan_id:
+            raise ValueError("Patch verification context is unavailable.")
+
+        previous_status = context.assessment.status
+        self.append_event(proposal.scan_id, "Verifying transparency disclosure")
+        try:
+            result = self.article50_analyzer_factory().analyze(
+                proposal.scan_id, [context.interaction]
+            )
+            validated = Article50AnalysisResult.model_validate(result)
+            assessment = next(
+                (
+                    item
+                    for item in validated.assessments
+                    if item.interaction_id == context.interaction.id
+                ),
+                None,
+            )
+            if assessment is None:
+                raise ValueError("Targeted verification returned no matching assessment.")
+        except Exception:
+            verification = VerificationResult(
+                id=str(uuid4()),
+                patch_id=proposal.id,
+                scan_id=proposal.scan_id,
+                finding_id=proposal.finding_id,
+                status=VerificationStatus.NEEDS_REVIEW,
+                previous_readiness_status=previous_status,
+                new_readiness_status=previous_status,
+                disclosure_detected=None,
+                explanation=(
+                    "The patch was applied, but automated transparency verification could not "
+                    "complete. Manual review is required."
+                ),
+                evidence=[],
+                verified_at=datetime.now(UTC),
+            )
+            self.append_event(proposal.scan_id, "Verification needs review")
+            return verification
+
+        if (
+            previous_status == ReadinessStatus.ACTION_REQUIRED
+            and assessment.status == ReadinessStatus.PASS
+        ):
+            verification_status = VerificationStatus.PASSED
+            explanation = (
+                "The approved disclosure was applied and the user-facing AI interaction now "
+                "contains an explicit AI transparency notice."
+            )
+        elif assessment.status == ReadinessStatus.NEEDS_REVIEW:
+            verification_status = VerificationStatus.NEEDS_REVIEW
+            explanation = (
+                "The patch was applied, but the transparency outcome still requires manual review."
+            )
+        else:
+            verification_status = VerificationStatus.FAILED
+            explanation = (
+                "The patch was applied, but the AI interaction still requires an explicit "
+                "transparency disclosure."
+            )
+
+        verification = VerificationResult(
+            id=str(uuid4()),
+            patch_id=proposal.id,
+            scan_id=proposal.scan_id,
+            finding_id=proposal.finding_id,
+            status=verification_status,
+            previous_readiness_status=previous_status,
+            new_readiness_status=assessment.status,
+            disclosure_detected=assessment.disclosure_detected,
+            explanation=explanation,
+            evidence=assessment.evidence,
+            verified_at=datetime.now(UTC),
+        )
+        self._store_verification_assessment(proposal, assessment, verification)
+        return verification
+
+    def _store_verification_assessment(
+        self,
+        proposal: PatchProposal,
+        assessment: TransparencyAssessment,
+        verification: VerificationResult,
+    ) -> None:
+        with self._lock:
+            scan = self._scans.get(proposal.scan_id)
+            if scan is None:
+                raise ValueError("Scan not found while storing patch verification.")
+            for index, current in enumerate(scan.article50_assessments):
+                if current.interaction_id == assessment.interaction_id:
+                    scan.article50_assessments[index] = assessment.model_copy(deep=True)
+                    break
+            for index, finding in enumerate(scan.findings):
+                if finding.id != proposal.finding_id:
+                    continue
+                resolved = verification.status == VerificationStatus.PASSED
+                scan.findings[index] = finding.model_copy(
+                    update={
+                        "status": assessment.status,
+                        "resolution": (
+                            FindingResolution.RESOLVED if resolved else FindingResolution.OPEN
+                        ),
+                        "explanation": assessment.explanation,
+                        "evidence": assessment.evidence,
+                        "remediation_available": False,
+                    },
+                    deep=True,
+                )
+                break
+            scan.status = _readiness_scan_status(scan.article50_assessments)
+            if verification.status == VerificationStatus.PASSED:
+                scan.events.append("AI disclosure detected")
+                scan.events.append("Verification passed")
+            elif verification.status == VerificationStatus.FAILED:
+                scan.events.append("Patch verification failed")
+            else:
+                scan.events.append("Verification needs review")
 
     def _capture_remediation_contexts(self, scan: Scan) -> None:
         assessments = {

@@ -1,9 +1,11 @@
+import os
 import re
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Lock
 from typing import Protocol
 from uuid import uuid4
@@ -19,7 +21,11 @@ from app.core.exceptions import (
     FindingNotRemediableError,
     InvalidPatchError,
     InvalidPatchTransitionError,
+    PatchAlreadyAppliedError,
+    PatchApplicationError,
+    PatchNotApprovedError,
     PatchNotFoundError,
+    PatchRollbackError,
     PatchTooLargeError,
     RemediationAgentError,
     RemediationContextError,
@@ -28,12 +34,16 @@ from app.models import (
     Evidence,
     EvidenceType,
     Finding,
+    PatchApplyResponse,
     PatchProposal,
     PatchStatus,
     ReadinessStatus,
     RemediationContext,
     RemediationPlan,
+    VerificationResult,
+    VerificationStatus,
 )
+from app.services.workspace_service import WorkspaceService
 from app.tools.disclosure_tools import extract_user_visible_strings
 
 HUNK_HEADER_PATTERN = re.compile(
@@ -56,12 +66,15 @@ class PatchContextProvider(Protocol):
 
     def append_event(self, scan_id: str, event: str) -> None: ...
 
+    def verify_patch(self, proposal: PatchProposal) -> VerificationResult: ...
+
 
 @dataclass(frozen=True)
 class ValidatedDiff:
     affected_files: list[str]
     original_snippets: list[Evidence]
     proposed_snippets: list[Evidence]
+    proposed_contents: dict[str, str]
 
 
 class UnifiedDiffValidator:
@@ -152,6 +165,7 @@ class UnifiedDiffValidator:
             affected_files=[old_path],
             original_snippets=original_snippets,
             proposed_snippets=proposed_snippets,
+            proposed_contents={old_path: proposed_content},
         )
 
 
@@ -161,12 +175,16 @@ class PatchService:
         settings: Settings | None = None,
         remediation_factory: Callable[[], RemediationGenerator] = RemediationAgent,
         validator: UnifiedDiffValidator | None = None,
+        workspace_service: WorkspaceService | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.remediation_factory = remediation_factory
         self.validator = validator or UnifiedDiffValidator(self.settings)
+        self.workspace_service = workspace_service or WorkspaceService(self.settings)
         self._patches: dict[str, PatchProposal] = {}
+        self._verifications: dict[str, VerificationResult] = {}
         self._lock = Lock()
+        self._application_lock = Lock()
 
     def generate(
         self, finding_id: str, context_provider: PatchContextProvider
@@ -233,7 +251,7 @@ class PatchService:
         self, patch_id: str, context_provider: PatchContextProvider
     ) -> PatchProposal:
         proposal = self._transition(patch_id, PatchStatus.APPROVED)
-        context_provider.append_event(proposal.scan_id, "Patch approved")
+        context_provider.append_event(proposal.scan_id, "Human approved remediation")
         return proposal
 
     def reject(
@@ -245,6 +263,167 @@ class PatchService:
         proposal = self._transition(patch_id, PatchStatus.REJECTED, reason=reason)
         context_provider.append_event(proposal.scan_id, "Patch rejected")
         return proposal
+
+    def apply(
+        self, patch_id: str, context_provider: PatchContextProvider
+    ) -> PatchApplyResponse:
+        """Apply one approved diff inside its scan workspace and verify the outcome."""
+
+        with self._application_lock:
+            proposal = self.get(patch_id)
+            if proposal.status in {PatchStatus.APPLIED, PatchStatus.VERIFIED}:
+                raise PatchAlreadyAppliedError("Patch has already been applied.")
+            if proposal.status != PatchStatus.APPROVED:
+                raise PatchNotApprovedError("Only an approved patch can be applied.")
+
+            context_provider.append_event(proposal.scan_id, "Validating patch")
+            try:
+                context = context_provider.get_remediation_context(proposal.finding_id)
+                if context is None or context.scan_id != proposal.scan_id:
+                    raise InvalidPatchError("The patch remediation context is unavailable.")
+                plan = _proposal_plan(proposal)
+                repository_root = self.workspace_service.get_repository_path(
+                    proposal.scan_id
+                ).resolve()
+                paths = {
+                    relative: _safe_mutation_path(repository_root, relative)
+                    for relative in proposal.affected_files
+                }
+                live_sources = []
+                original_sources = {source.file: source for source in context.source_files}
+                for relative, path in paths.items():
+                    if relative not in original_sources:
+                        raise InvalidPatchError(
+                            "The affected files do not match the approved remediation context."
+                        )
+                    content = _read_mutation_source(path, self.settings)
+                    digest = sha256(content.encode("utf-8")).hexdigest()
+                    if digest != original_sources[relative].sha256:
+                        raise InvalidPatchError(
+                            "The target source changed after the patch was proposed."
+                        )
+                    live_sources.append(
+                        original_sources[relative].model_copy(
+                            update={"content": content, "sha256": digest}
+                        )
+                    )
+                live_context = context.model_copy(
+                    update={"source_files": live_sources}, deep=True
+                )
+                validated = self.validator.validate(plan, live_context)
+                if set(validated.affected_files) != set(proposal.affected_files):
+                    raise InvalidPatchError(
+                        "The unified diff references files outside the approved boundary."
+                    )
+            except Exception:
+                self._set_application_status(patch_id, PatchStatus.FAILED)
+                context_provider.append_event(proposal.scan_id, "Patch application failed")
+                raise
+
+            self._set_application_status(patch_id, PatchStatus.APPLYING)
+            snapshot_root: Path | None = None
+            mutation_started = False
+            try:
+                before_manifest = _repository_manifest(repository_root)
+                context_provider.append_event(proposal.scan_id, "Creating safety snapshot")
+                snapshot_root = self._create_snapshot(proposal, paths)
+                context_provider.append_event(proposal.scan_id, "Applying patch")
+                mutation_started = True
+                for relative, path in paths.items():
+                    _write_mutation_source(path, validated.proposed_contents[relative])
+
+                after_manifest = _repository_manifest(repository_root)
+                changed_files = _changed_files(before_manifest, after_manifest)
+                expected_files = set(proposal.affected_files)
+                if changed_files != expected_files:
+                    raise PatchApplicationError(
+                        "Patch application changed files outside the approved boundary."
+                    )
+            except Exception as error:
+                if mutation_started and snapshot_root is not None:
+                    context_provider.append_event(proposal.scan_id, "Rolling back changes")
+                    try:
+                        self._restore_snapshot(snapshot_root, paths)
+                    except OSError as rollback_error:
+                        self._set_application_status(patch_id, PatchStatus.FAILED)
+                        raise PatchRollbackError(
+                            "Patch application failed and rollback could not be completed."
+                        ) from rollback_error
+                self._set_application_status(patch_id, PatchStatus.FAILED)
+                context_provider.append_event(proposal.scan_id, "Patch application failed")
+                if isinstance(error, (InvalidPatchError, PatchApplicationError)):
+                    raise
+                raise PatchApplicationError("The approved patch could not be applied.") from error
+
+            applied = self._set_application_status(
+                patch_id,
+                PatchStatus.APPLIED,
+                applied_at=datetime.now(UTC),
+                modified_files=sorted(proposal.affected_files),
+            )
+            context_provider.append_event(proposal.scan_id, "Patch applied successfully")
+            context_provider.append_event(proposal.scan_id, "Re-scanning affected interaction")
+            verification = context_provider.verify_patch(applied)
+            with self._lock:
+                self._verifications[verification.id] = verification.model_copy(deep=True)
+
+            if verification.status == VerificationStatus.PASSED:
+                updated = self._set_application_status(
+                    patch_id,
+                    PatchStatus.VERIFIED,
+                    verified_at=verification.verified_at,
+                )
+            else:
+                updated = self.get(patch_id)
+            return PatchApplyResponse(
+                patch_id=patch_id,
+                patch_status=updated.status,
+                verification=verification,
+            )
+
+    def get_verification(self, verification_id: str) -> VerificationResult | None:
+        with self._lock:
+            result = self._verifications.get(verification_id)
+            return result.model_copy(deep=True) if result is not None else None
+
+    def _create_snapshot(
+        self, proposal: PatchProposal, paths: dict[str, Path]
+    ) -> Path:
+        snapshot_root = self.workspace_service.get_snapshot_path(
+            proposal.scan_id, proposal.id
+        )
+        snapshot_root.mkdir(parents=True, exist_ok=False)
+        try:
+            for relative, source in paths.items():
+                destination = snapshot_root.joinpath(*PurePosixPath(relative).parts)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+        except OSError:
+            shutil.rmtree(snapshot_root, ignore_errors=True)
+            raise
+        return snapshot_root
+
+    @staticmethod
+    def _restore_snapshot(snapshot_root: Path, paths: dict[str, Path]) -> None:
+        for relative, destination in paths.items():
+            source = snapshot_root.joinpath(*PurePosixPath(relative).parts)
+            shutil.copy2(source, destination)
+
+    def _set_application_status(
+        self,
+        patch_id: str,
+        status: PatchStatus,
+        **updates: object,
+    ) -> PatchProposal:
+        with self._lock:
+            current = self._patches.get(patch_id)
+            if current is None:
+                raise PatchNotFoundError("Patch proposal not found.")
+            updated = current.model_copy(
+                update={"status": status, **updates}, deep=True
+            )
+            self._patches[patch_id] = updated
+            return updated.model_copy(deep=True)
 
     def _transition(
         self,
@@ -297,9 +476,106 @@ def _validated_header_path(line: str, prefix: str) -> str:
     return normalized
 
 
+def _proposal_plan(proposal: PatchProposal) -> RemediationPlan:
+    return RemediationPlan(
+        title=proposal.title,
+        rationale=proposal.rationale,
+        disclosure_text=proposal.disclosure_text or "",
+        affected_files=proposal.affected_files,
+        unified_diff=proposal.unified_diff,
+        confidence=proposal.confidence,
+    )
+
+
+def _safe_mutation_path(repository_root: Path, relative_path: str) -> Path:
+    raw = relative_path.strip()
+    windows = PureWindowsPath(raw)
+    posix = PurePosixPath(raw.replace("\\", "/"))
+    if (
+        not raw
+        or windows.is_absolute()
+        or windows.drive
+        or posix.is_absolute()
+        or ".." in posix.parts
+        or ".git" in {part.casefold() for part in posix.parts}
+        or "\\" in raw
+        or posix.as_posix() in {"", "."}
+    ):
+        raise InvalidPatchError("The patch target path is unsafe.")
+    normalized = posix.as_posix()
+    unresolved = repository_root.joinpath(*PurePosixPath(normalized).parts)
+    current = unresolved
+    while current != repository_root:
+        if current.is_symlink():
+            raise InvalidPatchError("Symbolic-link patch targets are not allowed.")
+        current = current.parent
+    candidate = unresolved.resolve()
+    try:
+        candidate.relative_to(repository_root)
+    except ValueError as error:
+        raise InvalidPatchError("The patch target is outside the repository workspace.") from error
+    if not candidate.is_file():
+        raise InvalidPatchError("The patch target must be an existing regular source file.")
+    return candidate
+
+
+def _read_mutation_source(path: Path, settings: Settings) -> str:
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise InvalidPatchError("The patch target could not be read.") from error
+    if len(payload) > settings.max_file_size_kb * 1024:
+        raise InvalidPatchError("The patch target exceeds the configured file size limit.")
+    if b"\x00" in payload:
+        raise InvalidPatchError("Binary patch targets are not allowed.")
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise InvalidPatchError("Binary patch targets are not allowed.") from error
+
+
+def _write_mutation_source(path: Path, content: str) -> None:
+    try:
+        path.write_bytes(content.encode("utf-8"))
+    except OSError as error:
+        raise PatchApplicationError("The approved patch could not be written.") from error
+
+
+def _repository_manifest(repository_root: Path) -> dict[str, str]:
+    manifest: dict[str, str] = {}
+    for current, directory_names, file_names in os.walk(repository_root, followlinks=False):
+        current_path = Path(current)
+        directory_names[:] = sorted(
+            name for name in directory_names if not (current_path / name).is_symlink()
+        )
+        for name in sorted(file_names):
+            path = current_path / name
+            relative = path.relative_to(repository_root).as_posix()
+            if path.is_symlink():
+                manifest[relative] = f"symlink:{os.readlink(path)}"
+                continue
+            try:
+                manifest[relative] = sha256(path.read_bytes()).hexdigest()
+            except OSError as error:
+                raise PatchApplicationError(
+                    "The repository could not be checked for unexpected changes."
+                ) from error
+    return manifest
+
+
+def _changed_files(before: dict[str, str], after: dict[str, str]) -> set[str]:
+    return {
+        path
+        for path in before.keys() | after.keys()
+        if before.get(path) != after.get(path)
+    }
+
+
 def _dry_apply(
     diff_lines: list[str], file: str, original_content: str
 ) -> tuple[list[Evidence], list[tuple[int, str]], str]:
+    newline = "\r\n" if "\r\n" in original_content else "\n"
+    has_final_newline = original_content.endswith(("\n", "\r"))
     original = original_content.splitlines()
     output: list[str] = []
     cursor = 0
@@ -362,7 +638,10 @@ def _dry_apply(
     if not original_evidence:
         raise InvalidPatchError("The unified diff contains no valid hunks.")
     output.extend(original[cursor:])
-    return original_evidence, added_lines, "\n".join(output)
+    proposed_content = newline.join(output)
+    if has_final_newline:
+        proposed_content += newline
+    return original_evidence, added_lines, proposed_content
 
 
 _patch_service: PatchService | None = None

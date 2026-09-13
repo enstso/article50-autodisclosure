@@ -1,7 +1,7 @@
-import type { PatchProposal } from "../types/api";
+import type { PatchApplyResponse, PatchProposal } from "../types/api";
 import { apiUrl, responseError } from "./client";
 
-async function patchRequest(path: string, body?: object): Promise<PatchProposal> {
+async function patchRequest<T>(path: string, body?: object): Promise<T> {
   const response = await fetch(apiUrl(path), {
     method: "POST",
     headers: {
@@ -13,20 +13,36 @@ async function patchRequest(path: string, body?: object): Promise<PatchProposal>
   if (!response.ok) {
     throw await responseError(response);
   }
+  return response.json() as Promise<T>;
+}
+
+export async function getPatch(patchId: string): Promise<PatchProposal> {
+  const response = await fetch(apiUrl(`/api/patches/${encodeURIComponent(patchId)}`), {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw await responseError(response);
+  }
   return response.json() as Promise<PatchProposal>;
 }
 
 export function generatePatch(findingId: string): Promise<PatchProposal> {
-  return patchRequest(`/api/findings/${encodeURIComponent(findingId)}/patch`);
+  return patchRequest<PatchProposal>(`/api/findings/${encodeURIComponent(findingId)}/patch`);
 }
 
 export function approvePatch(patchId: string): Promise<PatchProposal> {
-  return patchRequest(`/api/patches/${encodeURIComponent(patchId)}/approve`);
+  return patchRequest<PatchProposal>(`/api/patches/${encodeURIComponent(patchId)}/approve`);
 }
 
 export function rejectPatch(patchId: string, reason?: string): Promise<PatchProposal> {
-  return patchRequest(
+  return patchRequest<PatchProposal>(
     `/api/patches/${encodeURIComponent(patchId)}/reject`,
     reason ? { reason } : undefined,
+  );
+}
+
+export function applyPatch(patchId: string): Promise<PatchApplyResponse> {
+  return patchRequest<PatchApplyResponse>(
+    `/api/patches/${encodeURIComponent(patchId)}/apply`,
   );
 }

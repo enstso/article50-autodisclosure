@@ -39,6 +39,15 @@ class WorkspaceService:
     def get_repository_path(self, scan_id: str) -> Path:
         return self.get_workspace(scan_id) / "repository"
 
+    def get_snapshot_path(self, scan_id: str, patch_id: str) -> Path:
+        safe_patch_id = self._validate_scan_id(patch_id)
+        snapshot = (self.get_workspace(scan_id) / "snapshots" / safe_patch_id).resolve()
+        try:
+            snapshot.relative_to(self.get_workspace(scan_id))
+        except ValueError as error:
+            raise UnsafePathError("Snapshot path is unsafe.") from error
+        return snapshot
+
     def cleanup_workspace(self, scan_id: str) -> None:
         workspace = self.get_workspace(scan_id)
         if workspace.exists():

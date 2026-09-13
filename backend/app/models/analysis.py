@@ -24,9 +24,23 @@ class PatchStatus(StrEnum):
     DRAFT = "DRAFT"
     READY_FOR_REVIEW = "READY_FOR_REVIEW"
     APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
+    APPLYING = "APPLYING"
     APPLIED = "APPLIED"
+    VERIFIED = "VERIFIED"
     FAILED = "FAILED"
+    REJECTED = "REJECTED"
+
+
+class VerificationStatus(StrEnum):
+    PENDING = "PENDING"
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class FindingResolution(StrEnum):
+    OPEN = "OPEN"
+    RESOLVED = "RESOLVED"
 
 
 class EvidenceType(StrEnum):
@@ -60,6 +74,7 @@ class Finding(BaseModel):
     status: ReadinessStatus = ReadinessStatus.NEEDS_REVIEW
     remediation_available: bool = False
     patch_proposal_id: str | None = None
+    resolution: FindingResolution = FindingResolution.OPEN
 
 
 class Article50Rule(BaseModel):
@@ -112,8 +127,31 @@ class PatchProposal(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     created_at: datetime
     approved_at: datetime | None = None
+    applied_at: datetime | None = None
+    verified_at: datetime | None = None
+    modified_files: list[str] = Field(default_factory=list)
     rejected_at: datetime | None = None
     rejection_reason: str | None = Field(default=None, max_length=500)
+
+
+class VerificationResult(BaseModel):
+    id: str
+    patch_id: str
+    scan_id: str
+    finding_id: str
+    status: VerificationStatus
+    previous_readiness_status: ReadinessStatus
+    new_readiness_status: ReadinessStatus
+    disclosure_detected: bool | None
+    explanation: str
+    evidence: list[Evidence] = Field(default_factory=list)
+    verified_at: datetime
+
+
+class PatchApplyResponse(BaseModel):
+    patch_id: str
+    patch_status: PatchStatus
+    verification: VerificationResult
 
 
 class AIUsage(BaseModel):

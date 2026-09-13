@@ -86,19 +86,53 @@ class FakeAIAnalyzer:
 
 
 class FakeArticle50Analyzer:
+    def __init__(
+        self, workspace: WorkspaceService, *, force_action_required: bool = False
+    ) -> None:
+        self.workspace = workspace
+        self.force_action_required = force_action_required
+
     def analyze(self, scan_id: str, interactions: list[AIInteractionFlow]):
+        source = (
+            self.workspace.get_repository_path(scan_id) / "frontend" / "src" / "App.tsx"
+        ).read_text(encoding="utf-8")
+        disclosed = (
+            "You are interacting with an AI assistant." in source
+            and not self.force_action_required
+        )
+        evidence = list(interactions[0].evidence)
+        if disclosed:
+            evidence.append(
+                Evidence(
+                    file="frontend/src/App.tsx",
+                    line=4,
+                    snippet="<p>You are interacting with an AI assistant.</p>",
+                    type=EvidenceType.DISCLOSURE,
+                )
+            )
         return Article50AnalysisResult(
             assessments=[
                 TransparencyAssessment(
                     interaction_id=interactions[0].id,
                     rule_id="ARTICLE_50_1_AI_INTERACTION_DISCLOSURE",
-                    status=ReadinessStatus.ACTION_REQUIRED,
-                    disclosure_detected=False,
+                    status=(
+                        ReadinessStatus.PASS
+                        if disclosed
+                        else ReadinessStatus.ACTION_REQUIRED
+                    ),
+                    disclosure_detected=disclosed,
+                    disclosure_text=(
+                        "You are interacting with an AI assistant." if disclosed else None
+                    ),
+                    disclosure_file="frontend/src/App.tsx" if disclosed else None,
+                    disclosure_line=4 if disclosed else None,
                     explanation=(
-                        "A direct user-facing AI interaction was detected, but no clear "
+                        "A clear AI disclosure was found in the user-facing interaction context."
+                        if disclosed
+                        else "A direct user-facing AI interaction was detected, but no clear "
                         "transparency disclosure was found in the relevant interface."
                     ),
-                    evidence=interactions[0].evidence,
+                    evidence=evidence,
                     inspected_files=["frontend/src/App.tsx"],
                     confidence=0.9,
                 )
@@ -133,17 +167,19 @@ class FakeRemediationGenerator:
 @pytest.fixture
 def client(tmp_path):
     settings = Settings(workspace_path=tmp_path)
+    workspace = WorkspaceService(settings)
     service = ScanService(
         settings=settings,
-        workspace_service=WorkspaceService(settings),
+        workspace_service=workspace,
         repository_service=FakeRepositoryService(),
         analyzer_factory=FakeAnalyzer,
         ai_analyzer_factory=FakeAIAnalyzer,
-        article50_analyzer_factory=FakeArticle50Analyzer,
+        article50_analyzer_factory=lambda: FakeArticle50Analyzer(workspace),
     )
     patch_service = PatchService(
         settings=settings,
         remediation_factory=FakeRemediationGenerator,
+        workspace_service=workspace,
     )
     app.dependency_overrides[get_scan_service] = lambda: service
     app.dependency_overrides[get_patch_service] = lambda: patch_service
@@ -220,7 +256,7 @@ def test_generate_and_approve_patch_without_applying_repository_changes(
     assert approved_response.json()["approved_at"] is not None
     updated_scan = client.get(f"/api/scans/{scan['id']}").json()
     assert updated_scan["findings"][0]["patch_proposal_id"] == proposal["id"]
-    assert updated_scan["events"][-1] == "Patch approved"
+    assert updated_scan["events"][-1] == "Human approved remediation"
 
     invalid_transition = client.post(f"/api/patches/{proposal['id']}/reject")
     assert invalid_transition.status_code == 409
@@ -244,3 +280,77 @@ def test_reject_patch_and_unknown_resources_are_controlled(client: TestClient) -
     assert rejected.json()["rejection_reason"] == "Use different wording."
     assert client.post("/api/findings/unknown/patch").status_code == 404
     assert client.get("/api/patches/unknown").status_code == 404
+
+
+def test_apply_endpoint_reaches_pass_and_resolves_finding(client: TestClient) -> None:
+    scan = client.post(
+        "/api/scans",
+        json={"repository_url": "https://github.com/example/repository"},
+    ).json()
+    finding_id = scan["findings"][0]["id"]
+    proposal = client.post(f"/api/findings/{finding_id}/patch").json()
+    client.post(f"/api/patches/{proposal['id']}/approve")
+
+    response = client.post(f"/api/patches/{proposal['id']}/apply")
+
+    assert response.status_code == 200
+    applied = response.json()
+    assert applied["patch_status"] == "VERIFIED"
+    assert applied["verification"]["status"] == "PASSED"
+    assert applied["verification"]["previous_readiness_status"] == "ACTION_REQUIRED"
+    assert applied["verification"]["new_readiness_status"] == "PASS"
+    assert applied["verification"]["disclosure_detected"] is True
+
+    updated_scan = client.get(f"/api/scans/{scan['id']}").json()
+    assert updated_scan["status"] == "PASS"
+    assert updated_scan["findings"][0]["status"] == "PASS"
+    assert updated_scan["findings"][0]["resolution"] == "RESOLVED"
+    assert updated_scan["events"][-2:] == ["AI disclosure detected", "Verification passed"]
+
+    second_apply = client.post(f"/api/patches/{proposal['id']}/apply")
+    assert second_apply.status_code == 409
+
+
+def test_applied_patch_with_failed_verification_remains_action_required(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(workspace_path=tmp_path)
+    workspace = WorkspaceService(settings)
+    scan_service = ScanService(
+        settings=settings,
+        workspace_service=workspace,
+        repository_service=FakeRepositoryService(),
+        analyzer_factory=FakeAnalyzer,
+        ai_analyzer_factory=FakeAIAnalyzer,
+        article50_analyzer_factory=lambda: FakeArticle50Analyzer(
+            workspace, force_action_required=True
+        ),
+    )
+    patch_service = PatchService(
+        settings=settings,
+        remediation_factory=FakeRemediationGenerator,
+        workspace_service=workspace,
+    )
+    app.dependency_overrides[get_scan_service] = lambda: scan_service
+    app.dependency_overrides[get_patch_service] = lambda: patch_service
+    try:
+        with TestClient(app) as test_client:
+            scan = test_client.post(
+                "/api/scans",
+                json={"repository_url": "https://github.com/example/repository"},
+            ).json()
+            proposal = test_client.post(
+                f"/api/findings/{scan['findings'][0]['id']}/patch"
+            ).json()
+            test_client.post(f"/api/patches/{proposal['id']}/approve")
+
+            applied = test_client.post(f"/api/patches/{proposal['id']}/apply").json()
+            updated_scan = test_client.get(f"/api/scans/{scan['id']}").json()
+
+            assert applied["patch_status"] == "APPLIED"
+            assert applied["verification"]["status"] == "FAILED"
+            assert updated_scan["status"] == "ACTION_REQUIRED"
+            assert updated_scan["findings"][0]["resolution"] == "OPEN"
+            assert updated_scan["events"][-1] == "Patch verification failed"
+    finally:
+        app.dependency_overrides.clear()
