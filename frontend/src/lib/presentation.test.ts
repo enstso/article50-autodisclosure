@@ -90,7 +90,10 @@ describe("demo safety and activity", () => {
   });
 
   it("presents Bedrock access failures without exposing raw details", () => {
-    expect(friendlyAnalysisError("Amazon Bedrock access was denied.").title).toBe("Live AI model unavailable");
+    const result = friendlyAnalysisError("Amazon Bedrock access was denied.");
+    expect(result.title).toBe("Live AI model unavailable");
+    expect(result.detail).toContain("Amazon Bedrock is temporarily unavailable.");
+    expect(result.detail).not.toContain("access was denied");
   });
 
   it("always clears a loading action after an API failure", async () => {

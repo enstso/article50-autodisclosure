@@ -302,6 +302,16 @@ def test_diff_validator_rejects_oversized_patch() -> None:
         validator.validate(_plan(), _context())
 
 
+def test_diff_validator_relocates_unique_exact_context_when_hunk_start_is_off() -> None:
+    shifted = VALID_DIFF.replace("@@ -15,6 +15,7 @@", "@@ -14,6 +14,7 @@")
+
+    validated = UnifiedDiffValidator().validate(_plan(shifted), _context())
+
+    assert validated.affected_files == [TARGET_FILE]
+    assert validated.proposed_snippets[0].line == 17
+    assert "You are chatting with an AI assistant." in validated.proposed_contents[TARGET_FILE]
+
+
 def test_diff_validator_rejects_tampered_source_snapshot() -> None:
     context = _context()
     context.source_files[0].content += "\n// changed after snapshot"

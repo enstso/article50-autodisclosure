@@ -14,7 +14,7 @@ from app.agents import (
     RepositoryInvestigationAgent,
 )
 from app.core.config import Settings, get_settings
-from app.core.exceptions import AutoDisclosureError
+from app.core.exceptions import AutoDisclosureError, InvalidRepositoryUrlError
 from app.demo import (
     DEMO_REPOSITORY_URL,
     DemoAIInteractionAnalyzer,
@@ -83,17 +83,22 @@ class ScanService:
 
     def create_scan(self, repository_url: str) -> Scan:
         requested_repository = repository_url.strip()
-        demo_mode = requested_repository == DEMO_REPOSITORY_URL
+        controlled_repository = requested_repository == DEMO_REPOSITORY_URL
+        mock_mode = self.settings.use_mock_model
         scan = Scan(
             id=str(uuid4()),
             repository_url=requested_repository,
-            model_mode=ModelMode.DEMO if demo_mode else ModelMode.LIVE,
+            model_mode=ModelMode.DEMO if mock_mode else ModelMode.LIVE,
         )
         self._save(scan)
         workspace_created = False
 
         try:
-            if demo_mode:
+            if mock_mode and not controlled_repository:
+                raise InvalidRepositoryUrlError(
+                    "Demo mode only supports the controlled demo repository."
+                )
+            if controlled_repository:
                 scan.events.append("Controlled demo repository selected")
             else:
                 scan.repository_url = validate_repository_url(repository_url)
@@ -104,13 +109,13 @@ class ScanService:
             scan.status = ScanStatus.CLONING
             scan.events.append(
                 "Loading controlled demo repository"
-                if demo_mode
+                if controlled_repository
                 else "Cloning public GitHub repository"
             )
             self._save(scan)
 
             repository_path = self.workspace_service.get_repository_path(scan.id)
-            if demo_mode:
+            if controlled_repository:
                 materialize_demo_repository(repository_path)
                 metadata = {"commit": "demo001"}
                 scan.events.append("Demo repository loaded")
@@ -125,7 +130,7 @@ class ScanService:
             self._save(scan)
 
             repository_analyzer = (
-                DemoRepositoryAnalyzer() if demo_mode else self.analyzer_factory()
+                DemoRepositoryAnalyzer() if mock_mode else self.analyzer_factory()
             )
             summary = repository_analyzer.analyze(scan.id)
             scan.summary = RepositorySummary.model_validate(summary)
@@ -133,7 +138,7 @@ class ScanService:
             scan.events.append("Searching for AI dependencies and model invocations")
             self._save(scan)
             interaction_analyzer = (
-                DemoAIInteractionAnalyzer() if demo_mode else self.ai_analyzer_factory()
+                DemoAIInteractionAnalyzer() if mock_mode else self.ai_analyzer_factory()
             )
             investigation = interaction_analyzer.analyze(scan.id)
             validated_investigation = AIInvestigationResult.model_validate(investigation)
@@ -160,7 +165,7 @@ class ScanService:
             self._save(scan)
             article50_analyzer = (
                 DemoArticle50Analyzer(self.workspace_service)
-                if demo_mode
+                if mock_mode
                 else self.article50_analyzer_factory()
             )
             article50_result = article50_analyzer.analyze(

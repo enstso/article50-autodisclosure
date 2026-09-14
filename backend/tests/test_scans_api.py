@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
@@ -313,7 +314,7 @@ def test_apply_endpoint_reaches_pass_and_resolves_finding(client: TestClient) ->
 
 
 def test_controlled_demo_completes_the_full_verified_flow(tmp_path: Path) -> None:
-    settings = Settings(workspace_path=tmp_path)
+    settings = Settings(workspace_path=tmp_path, use_mock_model=True)
     workspace = WorkspaceService(settings)
     scan_service = ScanService(settings=settings, workspace_service=workspace)
     patch_service = PatchService(settings=settings, workspace_service=workspace)
@@ -360,6 +361,89 @@ def test_controlled_demo_completes_the_full_verified_flow(tmp_path: Path) -> Non
                 assert refreshed["findings"][0]["resolution"] == "RESOLVED"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_controlled_repository_uses_live_agents_when_mock_model_is_disabled(
+    tmp_path: Path,
+) -> None:
+    class StaticArticle50Analyzer:
+        def analyze(self, scan_id: str, interactions: list[AIInteractionFlow]):
+            return Article50AnalysisResult(
+                assessments=[
+                    TransparencyAssessment(
+                        interaction_id=interactions[0].id,
+                        rule_id="ARTICLE_50_1_AI_INTERACTION_DISCLOSURE",
+                        status=ReadinessStatus.ACTION_REQUIRED,
+                        disclosure_detected=False,
+                        explanation="No explicit disclosure was found.",
+                        evidence=interactions[0].evidence,
+                        inspected_files=["frontend/src/components/Chat.tsx"],
+                        confidence=0.9,
+                    )
+                ]
+            )
+
+    settings = Settings(workspace_path=tmp_path, use_mock_model=False)
+    service = ScanService(
+        settings=settings,
+        workspace_service=WorkspaceService(settings),
+        analyzer_factory=FakeAnalyzer,
+        ai_analyzer_factory=FakeAIAnalyzer,
+        article50_analyzer_factory=StaticArticle50Analyzer,
+    )
+
+    scan = service.create_scan(DEMO_REPOSITORY_URL)
+
+    assert scan.model_mode == "LIVE"
+    assert scan.status == ScanStatus.ACTION_REQUIRED
+    assert scan.summary is not None
+    assert scan.events[-1] == "Repository analysis completed"
+
+
+def test_live_bedrock_failure_never_falls_back_to_demo_output(tmp_path: Path) -> None:
+    class FailingLiveAnalyzer:
+        def analyze(self, scan_id: str):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ValidationException",
+                        "Message": "Access to Bedrock models is not allowed for this account",
+                    }
+                },
+                "ConverseStream",
+            )
+
+    settings = Settings(workspace_path=tmp_path, use_mock_model=False)
+    service = ScanService(
+        settings=settings,
+        workspace_service=WorkspaceService(settings),
+        analyzer_factory=FailingLiveAnalyzer,
+    )
+
+    scan = service.create_scan(DEMO_REPOSITORY_URL)
+
+    assert scan.model_mode == "LIVE"
+    assert scan.status == ScanStatus.FAILED
+    assert scan.summary is None
+    assert scan.error == "The configured Amazon Bedrock model is unavailable."
+    assert scan.events[-1] == "Repository analysis failed"
+
+
+def test_mock_mode_rejects_public_repository_instead_of_faking_results(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(workspace_path=tmp_path, use_mock_model=True)
+    service = ScanService(
+        settings=settings,
+        workspace_service=WorkspaceService(settings),
+    )
+
+    scan = service.create_scan("https://github.com/example/repository")
+
+    assert scan.model_mode == "DEMO"
+    assert scan.status == ScanStatus.FAILED
+    assert scan.summary is None
+    assert scan.error == "Demo mode only supports the controlled demo repository."
 
 
 def test_applied_patch_with_failed_verification_remains_action_required(

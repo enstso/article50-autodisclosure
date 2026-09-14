@@ -137,18 +137,21 @@ profile:
 ```env
 AWS_REGION=us-east-1
 BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-6
+USE_MOCK_MODEL=false
 ```
 
 The model identifier and region are configurable in `backend/.env`. The application creates a boto3
 session without embedded credentials and therefore uses the standard AWS credential provider chain.
 Do not place AWS access keys in any project `.env` file.
 
-The controlled demo mode does not call Amazon Bedrock; it is a development and presentation fallback,
-not the primary live architecture.
+`USE_MOCK_MODEL=false` keeps the full Strands → Bedrock path active, including when the controlled local
+repository is selected. Set `USE_MOCK_MODEL=true` only for deterministic development, automated tests,
+or a clearly labelled fallback demo. Live failures remain explicit and never switch to mock output.
 
-Release validation on 2026-09-13 reached the live Bedrock path, but the configured model was reported as
-unavailable. Live model validation therefore remains pending external AWS model access; the controlled
-demo and all local safety paths are fully validated.
+Live validation on 2026-09-14 confirmed the complete Strands → Amazon Bedrock workflow with Claude
+Sonnet 4.6: repository analysis, AI interaction reconstruction, Article 50 assessment, remediation
+generation, human approval, isolated patch application, re-scan, and final `PASS`. See
+[`docs/bedrock-live-validation.md`](docs/bedrock-live-validation.md).
 
 ## Human-in-the-loop safety
 
@@ -246,6 +249,7 @@ Backend settings are loaded from environment variables or `backend/.env`:
 | `APP_ENV` | `development` | Runtime label |
 | `AWS_REGION` | `us-east-1` | Bedrock client region |
 | `BEDROCK_MODEL_ID` | `global.anthropic.claude-sonnet-4-6` | Bedrock model or inference profile |
+| `USE_MOCK_MODEL` | `false` | Use deterministic responses only for tests or a fallback demo |
 | `WORKSPACE_PATH` | `./workspace` | Root for isolated scan workspaces |
 | `MAX_REPOSITORY_SIZE_MB` | `50` | Maximum accepted cloned repository size |
 | `MAX_FILE_SIZE_KB` | `250` | Maximum source file size read by analysis tools |
@@ -257,7 +261,9 @@ define credential settings of its own.
 
 ## Demo repository
 
-The controlled fixture lives in `backend/app/demo_repository` and contains:
+The controlled fixture lives in `backend/app/demo_repository`. It uses the active model configuration:
+real Strands + Bedrock inference when `USE_MOCK_MODEL=false`, or deterministic responses when the flag
+is explicitly `true`. The fixture contains:
 
 - a React customer-support chat interface;
 - a FastAPI `POST /api/chat` route;

@@ -30,6 +30,12 @@ export function AppShell({ children, modelMode }: AppShellProps) {
   }, []);
 
   const activeMode = modelMode ?? health?.model_mode;
+  const modelStatus =
+    activeMode === "DEMO"
+      ? "Demo mode · Mock model enabled"
+      : activeMode === "LIVE" && apiStatus === "connected"
+        ? "Amazon Bedrock connected"
+        : "Amazon Bedrock configured";
 
   return (
     <div className="min-h-screen bg-canvas text-slate-950">
@@ -60,17 +66,18 @@ export function AppShell({ children, modelMode }: AppShellProps) {
               GitHub
             </a>
             <div className="hidden h-5 w-px bg-slate-200 sm:block" />
-            {activeMode === "DEMO" ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-bold text-violet-700">
-                <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
-                Mock model enabled
-              </span>
-            ) : (
-              <span className="hidden items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700 lg:inline-flex">
-                <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
-                Amazon Bedrock configured
-              </span>
-            )}
+            <span
+              className={`hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold lg:inline-flex ${
+                activeMode === "DEMO"
+                  ? "border-violet-200 bg-violet-50 text-violet-700"
+                  : "border-sky-200 bg-sky-50 text-sky-700"
+              }`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${activeMode === "DEMO" ? "bg-violet-500" : "bg-sky-500"}`}
+              />
+              {modelStatus}
+            </span>
             <ApiConnectionStatus status={apiStatus} />
           </nav>
         </div>

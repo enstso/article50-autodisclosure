@@ -610,17 +610,30 @@ def _dry_apply(
             raise InvalidPatchError("The unified diff contains unsupported metadata or syntax.")
         old_start = int(match.group("old_start"))
         old_count = int(match.group("old_count") or 1)
-        new_start = int(match.group("new_start"))
         new_count = int(match.group("new_count") or 1)
         target = old_start - 1 if old_start > 0 else 0
         if target < cursor or target > len(original):
             raise InvalidPatchError("The unified diff hunk location is invalid.")
+        expected_old = _hunk_original_lines(diff_lines, index + 1)
+        if len(expected_old) != old_count:
+            raise InvalidPatchError("The unified diff hunk counts are inconsistent.")
+        if original[target : target + len(expected_old)] != expected_old:
+            exact_matches = [
+                position
+                for position in range(cursor, len(original) - len(expected_old) + 1)
+                if original[position : position + len(expected_old)] == expected_old
+            ]
+            if len(exact_matches) != 1:
+                raise InvalidPatchError("The unified diff does not match the original source.")
+            target = exact_matches[0]
         output.extend(original[cursor:target])
         cursor = target
         index += 1
         seen_old = 0
         seen_new = 0
-        new_line = new_start
+        # Use the position derived from exact source context. Model-generated hunk line numbers
+        # can be off by one even when every unchanged line matches byte-for-byte.
+        new_line = len(output) + 1
         first_original_line = cursor + 1 if cursor < len(original) else None
 
         while index < len(diff_lines) and not diff_lines[index].startswith("@@ "):
@@ -663,6 +676,22 @@ def _dry_apply(
     if has_final_newline:
         proposed_content += newline
     return original_evidence, added_lines, proposed_content
+
+
+def _hunk_original_lines(diff_lines: list[str], start: int) -> list[str]:
+    original: list[str] = []
+    index = start
+    while index < len(diff_lines) and not diff_lines[index].startswith("@@ "):
+        line = diff_lines[index]
+        if line == r"\ No newline at end of file":
+            index += 1
+            continue
+        if not line or line[0] not in {" ", "+", "-"}:
+            raise InvalidPatchError("The unified diff contains an invalid hunk line.")
+        if line[0] in {" ", "-"}:
+            original.append(line[1:])
+        index += 1
+    return original
 
 
 _patch_service: PatchService | None = None

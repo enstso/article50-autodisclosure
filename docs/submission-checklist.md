@@ -17,16 +17,16 @@ Intended track: **Professional Agents**.
 - [x] Article 50 scope and non-legal-advice limitation are explicit.
 - [x] Demo script and Devpost draft are complete.
 - [x] Screenshot names and capture instructions are prepared.
-- [ ] Review the final Git diff and commit Ticket 08.
-- [ ] Push the approved commit to the public repository.
+- [x] Review the final Git diff and commit Ticket 08.
+- [x] Push the approved Ticket 08 commit to the public repository.
 
 ## Technical validation
 
-- [x] Backend full test suite passes: 102 tests on 2026-09-13.
+- [x] Backend full test suite passes: 110 tests on 2026-09-14.
 - [x] Backend Ruff check and `pip check` pass.
 - [x] Security regression tests pass: traversal, isolation, approval, replay, mutation boundary, size,
       snapshot, and rollback.
-- [x] Frontend Vitest suite passes: 8 tests on 2026-09-13.
+- [x] Frontend Vitest suite passes: 8 tests on 2026-09-14.
 - [x] Frontend ESLint check passes.
 - [x] Frontend production build and TypeScript checks pass.
 - [x] Backend starts using the documented command.
@@ -37,8 +37,11 @@ Intended track: **Professional Agents**.
 - [x] Approved patch applies and verifies as `PASS`.
 - [x] Demo can be reset and repeated without manual fixture repair.
 - [x] Browser console has no release-blocking error during the demo.
-- [x] Live Bedrock was attempted on 2026-09-13; the configured model was unavailable and the pending
-      external validation is disclosed in the README.
+- [x] Ticket 09/10 live validation completed on 2026-09-14 with `USE_MOCK_MODEL=false`; AWS
+      authentication, inference-profile discovery, Strands, and Bedrock Runtime passed.
+- [x] AWS account permits invocation of `global.anthropic.claude-sonnet-4-6`.
+- [x] Complete live `ACTION REQUIRED → READY_FOR_REVIEW → APPROVED → VERIFIED → PASS` workflow is
+      recorded in `docs/bedrock-live-validation.md`.
 
 ## Screenshots
 

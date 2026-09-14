@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -41,6 +42,8 @@ user-facing interaction has no relevant disclosure. NEEDS_REVIEW means evidence,
 context is ambiguous. Do not assume a disclosure exists without source evidence. Do not modify or
 execute code. Return structured transparency assessments and do not expose chain-of-thought.
 """.strip()
+
+logger = logging.getLogger(__name__)
 
 
 class Article50AnalysisAgent:
@@ -103,16 +106,37 @@ class Article50AnalysisAgent:
             result = agent(prompt, structured_output_model=Article50AnalysisResult)
             structured_output = getattr(result, "structured_output", None)
             if structured_output is None:
+                logger.warning(
+                    "Article 50 agent returned no structured output for scan %s", scan_id
+                )
                 raise RepositoryAgentError(
                     "The Article 50 analysis agent returned no structured result."
                 )
-            proposed = Article50AnalysisResult.model_validate(structured_output)
+            proposed = _parse_article50_result(structured_output)
             return self.result_validator.validate(scan_id, confirmed, proposed)
         except RepositoryAgentError:
             raise
         except ValidationError as error:
+            # Do not log model output or repository content. The scan identifier is enough to
+            # correlate this controlled parsing failure with operational telemetry.
+            logger.warning(
+                "Article 50 structured output validation failed for scan %s", scan_id
+            )
             raise RepositoryAgentError(
                 "The Article 50 analysis agent returned an invalid structured result."
             ) from error
         finally:
             clear_scan_interactions(scan_id)
+
+
+def _parse_article50_result(structured_output: Any) -> Article50AnalysisResult:
+    """Accept the structured model object, a mapping, or a JSON serialization of either."""
+
+    if isinstance(structured_output, str):
+        payload = structured_output.strip()
+        if payload.startswith("```") and payload.endswith("```"):
+            lines = payload.splitlines()
+            if len(lines) >= 3:
+                payload = "\n".join(lines[1:-1]).strip()
+        return Article50AnalysisResult.model_validate_json(payload)
+    return Article50AnalysisResult.model_validate(structured_output)

@@ -2,9 +2,9 @@
 
 Target duration: **4:00–4:30**. Hard limit: stay below five minutes.
 
-The recording should use **Try Demo Repository** unless live Bedrock has been validated immediately
-before recording. The UI identifies demo mode, so describe it honestly as a deterministic presentation
-fixture exercising the real workflow and safety services.
+The recording should use **Try Demo Repository**. The controlled repository can run through live
+Strands + Bedrock with `USE_MOCK_MODEL=false`, or as a deterministic fallback with
+`USE_MOCK_MODEL=true`. Confirm the header and describe the selected mode honestly.
 
 ## Before recording
 

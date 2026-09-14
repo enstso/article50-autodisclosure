@@ -13,7 +13,10 @@ from app.models import (
     EvidenceType,
     ReadinessStatus,
 )
-from app.services.article50_service import TransparencyAssessmentValidator
+from app.services.article50_service import (
+    TransparencyAssessmentValidator,
+    build_article50_findings,
+)
 from app.services.workspace_service import WorkspaceService
 from app.tools.disclosure_tools import (
     DisclosureInspector,
@@ -165,6 +168,15 @@ def test_readiness_pass_and_action_required(
     else:
         assert assessment.disclosure_text is None
         assert all(item.type != EvidenceType.DISCLOSURE_ABSENCE for item in assessment.evidence)
+
+    findings = build_article50_findings(scan_id, result.assessments, [interaction])
+    if expected == ReadinessStatus.ACTION_REQUIRED:
+        assert len(findings) == 1
+        assert findings[0].status == ReadinessStatus.ACTION_REQUIRED
+        assert findings[0].severity == "MEDIUM"
+        assert findings[0].affected_files == ["frontend/src/Chat.tsx"]
+    else:
+        assert findings == []
 
 
 def test_ambiguous_assistant_label_requires_review(tmp_path: Path) -> None:

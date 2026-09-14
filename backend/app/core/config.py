@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     aws_region: str = "us-east-1"
     bedrock_model_id: str = "global.anthropic.claude-sonnet-4-6"
+    use_mock_model: bool = False
     workspace_path: Path = Path("./workspace")
     max_repository_size_mb: int = Field(default=50, gt=0)
     max_file_size_kb: int = Field(default=250, gt=0)

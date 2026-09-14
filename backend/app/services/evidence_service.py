@@ -267,6 +267,12 @@ class InvestigationResultValidator:
             provider_usages = [usage for usage in usages if usage.provider == provider]
             for usage in provider_usages:
                 verified.extend(usage.evidence)
+            if matching_route:
+                verified.extend(
+                    self._deterministic_backend_link_evidence(
+                        scan_id, matching_route["file"], verified
+                    )
+                )
             verified = _unique_evidence(verified)
 
             backend_handler = _verified_backend_file(proposed.backend_handler, verified)
@@ -291,13 +297,19 @@ class InvestigationResultValidator:
             completeness += 0.15 if backend_model_link else 0.0
             completeness += 0.10 if len(evidence_files) >= 3 else 0.0
             completeness = round(completeness, 2)
+            # The model's user_facing flag is advisory. An exact frontend caller -> API route ->
+            # backend handler -> model invocation path is stronger, deterministic evidence. This
+            # prevents a valid direct interaction from being dropped solely because the model
+            # returned a conservative boolean while keeping background/model-only usage excluded.
             confirmed = (
-                proposed.user_facing
-                and frontend_entrypoint is not None
+                frontend_entrypoint is not None
                 and endpoint is not None
                 and backend_handler is not None
                 and provider is not None
                 and backend_model_link
+                and EvidenceType.USER_INTERACTION in evidence_types
+                and EvidenceType.API_ROUTE in evidence_types
+                and EvidenceType.MODEL_CALL in evidence_types
                 and completeness >= 0.8
             )
             confidence = round(min(proposed.confidence, completeness), 2)
@@ -331,6 +343,63 @@ class InvestigationResultValidator:
                     evidence=verified,
                     confidence=confidence,
                 )
+            )
+        return output
+
+    def _deterministic_backend_link_evidence(
+        self,
+        scan_id: str,
+        route_file: str,
+        evidence: list[Evidence],
+    ) -> list[Evidence]:
+        """Prove a route-to-model link from exact source calls, without model inference."""
+
+        try:
+            route_source = self.repository.read_source_file(scan_id, route_file)["content"]
+        except (AutoDisclosureError, ValueError):
+            return []
+        route_lines = route_source.splitlines()
+        output: list[Evidence] = []
+
+        for model_call in (
+            item for item in evidence if item.type == EvidenceType.MODEL_CALL
+        ):
+            try:
+                model_source = self.repository.read_source_file(
+                    scan_id, model_call.file
+                )["content"]
+            except (AutoDisclosureError, ValueError):
+                continue
+            model_lines = model_source.splitlines()
+            symbol_info = _enclosing_function(model_lines, model_call.line)
+            if symbol_info is None:
+                continue
+            symbol, definition_line = symbol_info
+            route_line = next(
+                (
+                    index
+                    for index, line in enumerate(route_lines, start=1)
+                    if _contains_function_call(line, symbol)
+                ),
+                None,
+            )
+            if route_line is None:
+                continue
+            output.extend(
+                [
+                    Evidence(
+                        file=route_file,
+                        line=route_line,
+                        snippet=_bounded_snippet(route_lines[route_line - 1].strip()),
+                        type=EvidenceType.BACKEND_HANDLER,
+                    ),
+                    Evidence(
+                        file=model_call.file,
+                        line=definition_line,
+                        snippet=_bounded_snippet(model_lines[definition_line - 1].strip()),
+                        type=EvidenceType.BACKEND_HANDLER,
+                    ),
+                ]
             )
         return output
 
@@ -444,3 +513,37 @@ def _has_backend_model_link(evidence: list[Evidence]) -> bool:
             if route_symbols & model_symbols:
                 return True
     return False
+
+
+FUNCTION_DEFINITION_PATTERNS = (
+    re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("),
+    re.compile(
+        r"^\s*(?:export\s+)?(?:async\s+)?function\s+"
+        r"([A-Za-z_$][A-Za-z0-9_$]*)\s*\("
+    ),
+    re.compile(
+        r"^\s*(?:export\s+)?(?:const|let|var)\s+"
+        r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\("
+    ),
+)
+
+
+def _enclosing_function(
+    lines: list[str], line_number: int | None
+) -> tuple[str, int] | None:
+    if line_number is None or line_number < 1 or line_number > len(lines):
+        return None
+    for index in range(line_number - 1, -1, -1):
+        line = lines[index]
+        for pattern in FUNCTION_DEFINITION_PATTERNS:
+            match = pattern.search(line)
+            if match is not None:
+                return match.group(1), index + 1
+    return None
+
+
+def _contains_function_call(line: str, symbol: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith(("#", "//")):
+        return False
+    return re.search(rf"\b{re.escape(symbol)}\s*\(", line) is not None

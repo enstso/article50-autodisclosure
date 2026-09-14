@@ -103,7 +103,7 @@ export function friendlyAnalysisError(message: string | null): {
     return {
       title: "Live AI model unavailable",
       detail:
-        "The repository scan could not complete its model-based analysis. Try Demo Repository or retry when Amazon Bedrock access is available.",
+        "Amazon Bedrock is temporarily unavailable. The repository analysis could not complete. Retry when model access is available.",
     };
   }
   return {

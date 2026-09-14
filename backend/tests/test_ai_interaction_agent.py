@@ -34,16 +34,6 @@ def test_agent_reconstructs_validated_ui_to_bedrock_flow(tmp_path) -> None:
     signals = detector.detect_ai_usage(scan_id)
     route = detector.find_api_routes(scan_id)[0]
     caller = detector.search_endpoint_usage(scan_id, "/api/chat")[0]
-    backend_reference = next(
-        item
-        for item in detector.find_symbol_references(scan_id, "generate_reply")
-        if item["file"] == "backend/app/api/chat.py" and "return" in item["snippet"]
-    )
-    service_definition = next(
-        item
-        for item in detector.find_symbol_references(scan_id, "generate_reply")
-        if item["file"] == "backend/app/services/ai.py" and item["snippet"].startswith("def ")
-    )
     model_call = next(
         item
         for item in signals["usage_candidates"]
@@ -81,7 +71,9 @@ def test_agent_reconstructs_validated_ui_to_bedrock_flow(tmp_path) -> None:
             AIInteractionFlow(
                 id="model-proposed-id",
                 name="Customer support chatbot",
-                user_facing=True,
+                # The model can be conservative here. The validator must derive the final
+                # classification from the canonical UI -> API -> backend -> model evidence.
+                user_facing=False,
                 frontend_entrypoint=caller["file"],
                 api_endpoint="POST /api/chat",
                 backend_handler=route["file"],
@@ -93,8 +85,6 @@ def test_agent_reconstructs_validated_ui_to_bedrock_flow(tmp_path) -> None:
                 evidence=[
                     _evidence(caller, EvidenceType.USER_INTERACTION),
                     _evidence(route, EvidenceType.API_ROUTE),
-                    _evidence(backend_reference, EvidenceType.BACKEND_HANDLER),
-                    _evidence(service_definition, EvidenceType.BACKEND_HANDLER),
                     _evidence(model_call, EvidenceType.MODEL_CALL),
                     _evidence(model_configuration, EvidenceType.MODEL_CONFIGURATION),
                     Evidence(

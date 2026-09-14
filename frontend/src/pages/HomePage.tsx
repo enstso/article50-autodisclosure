@@ -41,7 +41,7 @@ export function HomePage() {
   const requestPresentation = requestError ? friendlyAnalysisError(requestError) : null;
 
   return (
-    <AppShell modelMode={demoSelected ? "DEMO" : undefined}>
+    <AppShell>
       <main>
         <section className="relative overflow-hidden border-b border-slate-200 bg-white">
           <div className="hero-grid absolute inset-0 opacity-60" aria-hidden="true" />
@@ -128,7 +128,7 @@ export function HomePage() {
                 Try Demo Repository
               </button>
               <p className="mt-3 text-center text-[11px] leading-5 text-slate-500">
-                Controlled local fixture · real scan, patch, and verification pipeline · mocked model responses
+                Controlled local fixture · active model from backend configuration · real scan, patch, and verification pipeline
               </p>
 
               {isAnalyzing && <AnalysisProgress demo={demoSelected} />}
